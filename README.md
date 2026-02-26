@@ -119,7 +119,7 @@ mypy src/
 - [x] Project structure setup
 - [x] Core models & schemas
 - [x] Jira integration (webhook receiver, API client)
-- [ ] Event handling pipeline
+- [x] Event handling pipeline
 
 📋 **Phase 2: Agent Core**
 - [ ] Comment classifier (LLM-based)
