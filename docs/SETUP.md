@@ -5,7 +5,7 @@
 - Python 3.10 or later
 - MongoDB (local or cloud instance)
 - Jira Cloud account with admin access
-- Anthropic API key
+- GitHub Copilot SDK API key
 - (Optional) Confluence instance for RAG indexing
 
 ## Installation
@@ -92,8 +92,8 @@ ptw
 - `JIRA_API_TOKEN`: API token (generate in Jira Personal Settings)
 
 ### LLM Configuration
-- `ANTHROPIC_API_KEY`: Get from console.anthropic.com
-- `MODEL_NAME`: Default is claude-3-5-sonnet-20241022
+- `GITHUB_COPILOT_API_KEY`: API key for GitHub Copilot SDK access
+- `COPILOT_MODEL`: Model identifier used by Copilot SDK
 
 ### Webhook Configuration
 - `WEBHOOK_SECRET`: HMAC secret for signature verification

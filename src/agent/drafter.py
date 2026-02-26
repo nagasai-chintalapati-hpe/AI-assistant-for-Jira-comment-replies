@@ -14,7 +14,7 @@ class ResponseDrafter:
     """Generates draft responses using LLM and templates"""
     
     def __init__(self):
-        # TODO: Initialize Anthropic client
+        # TODO: Initialize GitHub Copilot SDK client
         pass
     
     def draft(
@@ -37,7 +37,7 @@ class ResponseDrafter:
         # TODO: Implement LLM-based draft generation
         # 1. Load appropriate template based on classification
         # 2. Build prompt with context and RAG results
-        # 3. Call Claude API
+        # 3. Call Copilot SDK API
         # 4. Extract draft, actions, labels
         # 5. Generate citations
         

@@ -83,7 +83,7 @@ Action Executor (Post + Log)
 - Python 3.10+
 - MongoDB (for audit logs)
 - Jira Cloud instance with admin access
-- Anthropic API key (Claude)
+- GitHub Copilot SDK API key
 - (Optional) Confluence instance for RAG
 
 ### Installation

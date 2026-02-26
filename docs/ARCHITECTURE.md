@@ -19,7 +19,7 @@
 
 4. Draft Generation
    ├─> Load Template
-   ├─> Call LLM (Claude)
+   ├─> Call LLM (GitHub Copilot SDK)
    ├─> Extract Citations
    └─> Suggest Actions/Labels
 
@@ -80,7 +80,7 @@
 - Tracks evidence sources for citations
 
 ### 5. **Response Drafter** (`src/agent/drafter.py`)
-- Generates contextualized responses using Claude API
+- Generates contextualized responses using GitHub Copilot SDK
 - Loads templates based on comment classification
 - Builds prompts with context + RAG results
 - Extracts suggested actions (labels, transitions, assignments)
@@ -185,7 +185,7 @@
 - Python 3.10+
 - MongoDB instance
 - Jira Cloud instance
-- Anthropic API key
+- GitHub Copilot SDK API key
 - (Optional) Confluence instance
 
 ### On-Prem Deployment
