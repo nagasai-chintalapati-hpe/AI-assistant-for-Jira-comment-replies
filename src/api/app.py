@@ -19,11 +19,15 @@ from src.models.draft import DraftStatus
 from src.api.event_filter import EventFilter
 from src.agent.classifier import CommentClassifier
 from src.agent.drafter import ResponseDrafter
+from src.integrations.notifications import (
+    TeamsNotifier,
+    EmailNotifier,
+    NotificationService,
+)
 
 logger = logging.getLogger(__name__)
 
-# ---- singletons ----------------------------------------------------- #
-
+# singletons 
 event_filter = EventFilter()
 
 # Copilot SDK API key — optional; leave empty for keyword-only mode
@@ -36,18 +40,42 @@ drafter = ResponseDrafter(api_key=_COPILOT_API_KEY, model=_COPILOT_MODEL)
 # In-memory draft store (MVP v1)
 draft_store: dict[str, dict] = {}
 
+# Notification service (optional — disabled when env vars are empty)
+_teams = TeamsNotifier(webhook_url=os.getenv("TEAMS_WEBHOOK_URL"))
+_email = EmailNotifier(
+    smtp_host=os.getenv("SMTP_HOST"),
+    smtp_port=int(os.getenv("SMTP_PORT", "587")),
+    smtp_username=os.getenv("SMTP_USERNAME"),
+    smtp_password=os.getenv("SMTP_PASSWORD"),
+    from_address=os.getenv("EMAIL_FROM"),
+    to_addresses=[
+        a.strip()
+        for a in (os.getenv("EMAIL_TO") or "").split(",")
+        if a.strip()
+    ],
+)
+notifier = NotificationService(teams=_teams, email=_email)
+
 
 @asynccontextmanager
 async def lifespan(app_instance: FastAPI):
     """Application lifespan — startup / shutdown."""
-    logger.info("Starting Jira Comment Assistant API (v0.3.0)")
+    channels = []
+    if _teams.enabled:
+        channels.append("Teams")
+    if _email.enabled:
+        channels.append("Email")
+    logger.info(
+        "Starting Jira Comment Assistant API (v0.4.0) — notifications: %s",
+        ", ".join(channels) if channels else "none",
+    )
     yield
 
 
 app = FastAPI(
     title="Jira Comment Assistant",
     description="AI assistant for responding to Jira defect comments",
-    version="0.3.0",
+    version="0.4.0",
     lifespan=lifespan,
 )
 
@@ -58,8 +86,12 @@ async def health_check():
     return {
         "status": "healthy",
         "timestamp": datetime.now(timezone.utc).isoformat(),
-        "version": "0.3.0",
+        "version": "0.4.0",
         "drafts_in_store": len(draft_store),
+        "notifications": {
+            "teams": _teams.enabled,
+            "email": _email.enabled,
+        },
     }
 
 #  Webhook endpoint     
@@ -161,6 +193,15 @@ async def handle_comment_event(event: JiraWebhookEvent):
     # 5. Store
     draft_store[draft.draft_id] = draft.model_dump(mode="json")
 
+    # 6. Notify (Teams / Email — optional, fire-and-forget)
+    notifier.notify_draft_generated(
+        draft_id=draft.draft_id,
+        issue_key=comment.issue_key,
+        classification=classification.comment_type.value,
+        confidence=classification.confidence,
+        body_preview=draft.body,
+    )
+
     return {
         "status": "processed",
         "event_id": event.event_id,
@@ -235,6 +276,13 @@ async def approve_draft(request: Request):
 
         logger.info("Draft %s approved by %s", draft_id, approved_by)
 
+        # Notify (Teams / Email)
+        notifier.notify_draft_approved(
+            draft_id=draft_id,
+            issue_key=draft_store[draft_id].get("issue_key", ""),
+            approved_by=approved_by or "unknown",
+        )
+
         # TODO: Post comment to Jira via JiraClient.add_comment()
 
         return {"status": "approved", "draft_id": draft_id}
@@ -260,6 +308,13 @@ async def reject_draft(request: Request):
         draft_store[draft_id]["feedback"] = feedback
 
         logger.info("Draft %s rejected. Feedback: %s", draft_id, feedback)
+
+        # Notify (Teams / Email)
+        notifier.notify_draft_rejected(
+            draft_id=draft_id,
+            issue_key=draft_store[draft_id].get("issue_key", ""),
+            feedback=feedback,
+        )
 
         return {"status": "rejected", "draft_id": draft_id}
     except HTTPException:
