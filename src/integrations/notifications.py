@@ -48,7 +48,7 @@ class TeamsNotifier:
     ) -> bool:
         """Send a 'new draft' card to Teams."""
         card = self._build_card(
-            title=f"📝 New Draft — {issue_key}",
+            title=f" New Draft — {issue_key}",
             facts={
                 "Draft ID": draft_id,
                 "Classification": classification,
@@ -138,4 +138,125 @@ class TeamsNotifier:
             return True
         except Exception as exc:
             logger.warning("Teams notification failed: %s", exc)
+            return False
+
+
+# ===================================================================== #
+#  Email (SMTP) Notifier                                                 #
+# ===================================================================== #
+
+class EmailNotifier:
+    """Send plain-text + HTML email notifications via SMTP."""
+
+    def __init__(
+        self,
+        smtp_host: Optional[str] = None,
+        smtp_port: int = 587,
+        smtp_username: Optional[str] = None,
+        smtp_password: Optional[str] = None,
+        from_address: Optional[str] = None,
+        to_addresses: Optional[list[str]] = None,
+        use_tls: bool = True,
+    ):
+        self._host = smtp_host
+        self._port = smtp_port
+        self._username = smtp_username
+        self._password = smtp_password
+        self._from = from_address
+        self._to = to_addresses or []
+        self._use_tls = use_tls
+        if self._host:
+            logger.info("Email notifier initialised (host=%s)", self._host)
+
+    @property
+    def enabled(self) -> bool:
+        return bool(self._host and self._from and self._to)
+
+    # ------------------------------------------------------------------ #
+    #  Public helpers                                                     #
+    # ------------------------------------------------------------------ #
+
+    def notify_draft_generated(
+        self,
+        draft_id: str,
+        issue_key: str,
+        classification: str,
+        confidence: float,
+        body_preview: str,
+    ) -> bool:
+        subject = f"[Jira Assistant] New Draft — {issue_key}"
+        html = (
+            f"<h2>📝 New Draft Generated</h2>"
+            f"<p><b>Issue:</b> {issue_key}<br>"
+            f"<b>Draft ID:</b> {draft_id}<br>"
+            f"<b>Classification:</b> {classification}<br>"
+            f"<b>Confidence:</b> {confidence:.0%}</p>"
+            f"<h3>Preview</h3><pre>{body_preview[:1000]}</pre>"
+        )
+        return self._send_email(subject, html)
+
+    def notify_draft_approved(
+        self,
+        draft_id: str,
+        issue_key: str,
+        approved_by: str,
+    ) -> bool:
+        subject = f"[Jira Assistant] Draft Approved — {issue_key}"
+        html = (
+            f"<h2>✅ Draft Approved</h2>"
+            f"<p><b>Issue:</b> {issue_key}<br>"
+            f"<b>Draft ID:</b> {draft_id}<br>"
+            f"<b>Approved by:</b> {approved_by}</p>"
+        )
+        return self._send_email(subject, html)
+
+    def notify_draft_rejected(
+        self,
+        draft_id: str,
+        issue_key: str,
+        feedback: str,
+    ) -> bool:
+        subject = f"[Jira Assistant] Draft Rejected — {issue_key}"
+        html = (
+            f"<h2>❌ Draft Rejected</h2>"
+            f"<p><b>Issue:</b> {issue_key}<br>"
+            f"<b>Draft ID:</b> {draft_id}<br>"
+            f"<b>Feedback:</b> {feedback or '(none)'}</p>"
+        )
+        return self._send_email(subject, html)
+
+    # ------------------------------------------------------------------ #
+    #  Internals                                                         #
+    # ------------------------------------------------------------------ #
+
+    def _send_email(self, subject: str, html_body: str) -> bool:
+        """Send an HTML email via SMTP."""
+        if not self.enabled:
+            logger.debug("Email notifier disabled (missing config)")
+            return False
+        try:
+            msg = MIMEMultipart("alternative")
+            msg["Subject"] = subject
+            msg["From"] = self._from
+            msg["To"] = ", ".join(self._to)
+
+            # Plain-text fallback
+            import re
+            plain = html_body.replace("<br>", "\n").replace("</p>", "\n")
+            plain = re.sub(r"<[^>]+>", "", plain)
+
+            msg.attach(MIMEText(plain, "plain"))
+            msg.attach(MIMEText(html_body, "html"))
+
+            with smtplib.SMTP(self._host, self._port) as server:
+                if self._use_tls:
+                    server.starttls()
+                if self._username and self._password:
+                    server.login(self._username, self._password)
+                server.sendmail(self._from, self._to, msg.as_string())
+
+            logger.info("Email notification sent to %s", self._to)
+            return True
+        except Exception as exc:
+            logger.warning("Email notification failed: %s", exc)
             return False
