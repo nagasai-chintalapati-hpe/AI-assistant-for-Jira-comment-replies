@@ -140,11 +140,7 @@ class TeamsNotifier:
             logger.warning("Teams notification failed: %s", exc)
             return False
 
-
-# ===================================================================== #
-#  Email (SMTP) Notifier                                                 #
-# ===================================================================== #
-
+#  Email (SMTP) Notifier        
 class EmailNotifier:
     """Send plain-text + HTML email notifications via SMTP."""
 
@@ -172,10 +168,7 @@ class EmailNotifier:
     def enabled(self) -> bool:
         return bool(self._host and self._from and self._to)
 
-    # ------------------------------------------------------------------ #
-    #  Public helpers                                                     #
-    # ------------------------------------------------------------------ #
-
+    #  Public helpers  
     def notify_draft_generated(
         self,
         draft_id: str,
@@ -186,7 +179,7 @@ class EmailNotifier:
     ) -> bool:
         subject = f"[Jira Assistant] New Draft — {issue_key}"
         html = (
-            f"<h2>📝 New Draft Generated</h2>"
+            f"<h2>New Draft Generated</h2>"
             f"<p><b>Issue:</b> {issue_key}<br>"
             f"<b>Draft ID:</b> {draft_id}<br>"
             f"<b>Classification:</b> {classification}<br>"
@@ -203,7 +196,7 @@ class EmailNotifier:
     ) -> bool:
         subject = f"[Jira Assistant] Draft Approved — {issue_key}"
         html = (
-            f"<h2>✅ Draft Approved</h2>"
+            f"<h2>Draft Approved</h2>"
             f"<p><b>Issue:</b> {issue_key}<br>"
             f"<b>Draft ID:</b> {draft_id}<br>"
             f"<b>Approved by:</b> {approved_by}</p>"
@@ -218,17 +211,14 @@ class EmailNotifier:
     ) -> bool:
         subject = f"[Jira Assistant] Draft Rejected — {issue_key}"
         html = (
-            f"<h2>❌ Draft Rejected</h2>"
+            f"<h2>Draft Rejected</h2>"
             f"<p><b>Issue:</b> {issue_key}<br>"
             f"<b>Draft ID:</b> {draft_id}<br>"
             f"<b>Feedback:</b> {feedback or '(none)'}</p>"
         )
         return self._send_email(subject, html)
 
-    # ------------------------------------------------------------------ #
-    #  Internals                                                         #
-    # ------------------------------------------------------------------ #
-
+    #  Internals 
     def _send_email(self, subject: str, html_body: str) -> bool:
         """Send an HTML email via SMTP."""
         if not self.enabled:
@@ -260,3 +250,77 @@ class EmailNotifier:
         except Exception as exc:
             logger.warning("Email notification failed: %s", exc)
             return False
+
+
+# ===================================================================== #
+#  Unified Notifier Facade                                               #
+# ===================================================================== #
+
+class NotificationService:
+    """Facade that fans out to Teams + Email (both optional)."""
+
+    def __init__(
+        self,
+        teams: Optional[TeamsNotifier] = None,
+        email: Optional[EmailNotifier] = None,
+    ):
+        self._teams = teams
+        self._email = email
+
+    @property
+    def any_enabled(self) -> bool:
+        return (
+            (self._teams is not None and self._teams.enabled)
+            or (self._email is not None and self._email.enabled)
+        )
+
+    def notify_draft_generated(
+        self,
+        draft_id: str,
+        issue_key: str,
+        classification: str,
+        confidence: float,
+        body_preview: str,
+    ) -> dict[str, bool]:
+        """Notify all enabled channels about a new draft."""
+        results: dict[str, bool] = {}
+        kwargs = dict(
+            draft_id=draft_id,
+            issue_key=issue_key,
+            classification=classification,
+            confidence=confidence,
+            body_preview=body_preview,
+        )
+        if self._teams and self._teams.enabled:
+            results["teams"] = self._teams.notify_draft_generated(**kwargs)
+        if self._email and self._email.enabled:
+            results["email"] = self._email.notify_draft_generated(**kwargs)
+        return results
+
+    def notify_draft_approved(
+        self,
+        draft_id: str,
+        issue_key: str,
+        approved_by: str,
+    ) -> dict[str, bool]:
+        results: dict[str, bool] = {}
+        kwargs = dict(draft_id=draft_id, issue_key=issue_key, approved_by=approved_by)
+        if self._teams and self._teams.enabled:
+            results["teams"] = self._teams.notify_draft_approved(**kwargs)
+        if self._email and self._email.enabled:
+            results["email"] = self._email.notify_draft_approved(**kwargs)
+        return results
+
+    def notify_draft_rejected(
+        self,
+        draft_id: str,
+        issue_key: str,
+        feedback: str,
+    ) -> dict[str, bool]:
+        results: dict[str, bool] = {}
+        kwargs = dict(draft_id=draft_id, issue_key=issue_key, feedback=feedback)
+        if self._teams and self._teams.enabled:
+            results["teams"] = self._teams.notify_draft_rejected(**kwargs)
+        if self._email and self._email.enabled:
+            results["email"] = self._email.notify_draft_rejected(**kwargs)
+        return results
