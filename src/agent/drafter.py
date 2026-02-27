@@ -69,3 +69,90 @@ TEMPLATES: dict[CommentType, str] = {
         "**Issue:** {issue_key} – {summary}"
     ),
 }
+
+
+class ResponseDrafter:
+    """Generates draft responses using templates + optional Copilot SDK refinement."""
+
+    def __init__(self, api_key: Optional[str] = None, model: str = "gpt-4"):
+        self._client = None
+        self._model = model
+        if api_key:
+            try:
+                from openai import OpenAI  # Copilot SDK compatible client
+
+                self._client = OpenAI(api_key=api_key)
+                logger.info("Copilot SDK drafter initialised (model=%s)", model)
+            except Exception as exc:
+                logger.warning("Could not initialise Copilot SDK drafter: %s", exc)
+
+    # ------------------------------------------------------------------ #
+    #  Public API                                                         #
+    # ------------------------------------------------------------------ #
+
+    def draft(
+        self,
+        comment: Comment,
+        classification: CommentClassification,
+        context: ContextCollectionResult,
+    ) -> Draft:
+        """Generate a draft response to a comment."""
+
+        # 1. Template-fill
+        template_body = self._fill_template(comment, classification, context)
+
+        # 2. Use template as-is (Copilot SDK refinement added next)
+        draft_body = template_body
+
+        # 3. Assemble Draft
+        return Draft(
+            draft_id=f"draft_{int(datetime.now(timezone.utc).timestamp())}",
+            issue_key=comment.issue_key,
+            in_reply_to_comment_id=comment.comment_id,
+            created_at=datetime.now(timezone.utc),
+            created_by="system",
+            body=draft_body,
+            status=DraftStatus.GENERATED,
+            confidence_score=classification.confidence,
+        )
+
+    # ------------------------------------------------------------------ #
+    #  Template filling                                                   #
+    # ------------------------------------------------------------------ #
+
+    def _fill_template(
+        self,
+        comment: Comment,
+        classification: CommentClassification,
+        context: ContextCollectionResult,
+    ) -> str:
+        """Select and fill the template for *classification.comment_type*."""
+
+        ctx = context.issue_context
+        template = TEMPLATES.get(classification.comment_type, TEMPLATES[CommentType.OTHER])
+
+        # Build a safe substitution dict with fallbacks
+        subs: dict[str, str] = {
+            "issue_key": ctx.issue_key,
+            "summary": ctx.summary,
+            "environment": ctx.environment or "N/A",
+            "build_version": (ctx.versions[0] if ctx.versions else "N/A"),
+            "observation": "See attached evidence",
+            "repro_steps": "1. (auto-detected from ticket – please verify)",
+            "feature_flag": "N/A",
+            "component": (ctx.components[0] if ctx.components else "N/A"),
+            "time_window": "last 24 h",
+            "existing_evidence": "• (none collected yet)",
+            "missing_items": "• (nothing flagged)",
+            "doc_link": "N/A",
+            "expected_behavior": "See referenced documentation",
+            "fix_version": (ctx.versions[0] if ctx.versions else "N/A"),
+            "retest_checklist": "1. Verify the reported scenario end-to-end",
+            "target_env": ctx.environment or "staging",
+        }
+
+        try:
+            return template.format_map(subs)
+        except KeyError as exc:
+            logger.warning("Template substitution key missing: %s", exc)
+            return template  # return raw template on failure
