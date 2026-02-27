@@ -87,6 +87,29 @@ class TestDraftGeneration:
         assert "DEFECT-123" in draft.body
 
 
+class TestSuggestedLabels:
+    def test_labels_for_cannot_reproduce(self, drafter, sample_comment, sample_context):
+        classification = _make_classification(
+            CommentType.CANNOT_REPRODUCE, missing=["env"]
+        )
+        draft = drafter.draft(sample_comment, classification, sample_context)
+        assert "cannot-reproduce" in draft.suggested_labels
+        assert "needs-info" in draft.suggested_labels
+
+    def test_labels_for_fixed_validate(self, drafter, sample_comment, sample_context):
+        classification = _make_classification(CommentType.FIXED_VALIDATE)
+        draft = drafter.draft(sample_comment, classification, sample_context)
+        assert "fixed-validate" in draft.suggested_labels
+
+
+class TestSuggestedActions:
+    def test_actions_for_fixed_validate(self, drafter, sample_comment, sample_context):
+        classification = _make_classification(CommentType.FIXED_VALIDATE)
+        draft = drafter.draft(sample_comment, classification, sample_context)
+        action_types = [a["action"] for a in draft.suggested_actions]
+        assert "transition" in action_types
+
+
 class TestTemplatesExist:
     """Every CommentType used in the drafter should have a template."""
 
