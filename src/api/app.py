@@ -1,7 +1,7 @@
-"""FastAPI application – Phase 1: Architecture & Scaffolding.
+"""FastAPI application – full pipeline + approval workflow.
 
-Webhook receiver → event filtering → accepted event logging.
-Classification, drafting, and notifications are added in later phases.
+Webhook → filter → classify → context → draft → store.
+Approval endpoints for human-in-the-loop review.
 """
 
 from contextlib import asynccontextmanager
@@ -9,6 +9,7 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
 from pydantic import ValidationError
 import logging
+import os
 from datetime import datetime, timezone
 from typing import Optional
 
@@ -16,12 +17,21 @@ from src.models.webhook import JiraWebhookEvent
 from src.models.comment import Comment
 from src.models.draft import DraftStatus
 from src.api.event_filter import EventFilter
+from src.agent.classifier import CommentClassifier
+from src.agent.drafter import ResponseDrafter
 
 logger = logging.getLogger(__name__)
 
 # ---- singletons ----------------------------------------------------- #
 
 event_filter = EventFilter()
+
+# Copilot SDK API key — optional; leave empty for keyword-only mode
+_COPILOT_API_KEY: Optional[str] = os.getenv("COPILOT_API_KEY")
+_COPILOT_MODEL: str = os.getenv("COPILOT_MODEL", "gpt-4")
+
+classifier = CommentClassifier(api_key=_COPILOT_API_KEY, model=_COPILOT_MODEL)
+drafter = ResponseDrafter(api_key=_COPILOT_API_KEY, model=_COPILOT_MODEL)
 
 # In-memory draft store (MVP v1)
 draft_store: dict[str, dict] = {}
@@ -30,14 +40,14 @@ draft_store: dict[str, dict] = {}
 @asynccontextmanager
 async def lifespan(app_instance: FastAPI):
     """Application lifespan — startup / shutdown."""
-    logger.info("Starting Jira Comment Assistant API (v0.2.0)")
+    logger.info("Starting Jira Comment Assistant API (v0.3.0)")
     yield
 
 
 app = FastAPI(
     title="Jira Comment Assistant",
     description="AI assistant for responding to Jira defect comments",
-    version="0.2.0",
+    version="0.3.0",
     lifespan=lifespan,
 )
 
@@ -48,7 +58,7 @@ async def health_check():
     return {
         "status": "healthy",
         "timestamp": datetime.now(timezone.utc).isoformat(),
-        "version": "0.2.0",
+        "version": "0.3.0",
         "drafts_in_store": len(draft_store),
     }
 
@@ -58,11 +68,12 @@ async def jira_webhook(request: Request):
     """
     Webhook endpoint for Jira events.
 
-    Phase 1 flow:
+    Full pipeline:
     1. Parse & validate payload → JiraWebhookEvent.
     2. EventFilter gates (type, status, keyword, idempotency).
-    3. Build Comment model from accepted event.
-    4. Return accepted event summary (classification added in Phase 2).
+    3. Build Comment model from event.
+    4. Classify → collect context → draft response → store.
+    5. Return draft summary.
     """
     try:
         payload = await request.json()
@@ -96,10 +107,23 @@ async def jira_webhook(request: Request):
             "event_id": result.event_id,
         }
 
-    # --- build Comment model ------------------------------------------ #
+    # --- orchestrate -------------------------------------------------- #
+    return await handle_comment_event(event)
+
+
+# ===================================================================== #
+#  Orchestration                                                         #
+# ===================================================================== #
+
+async def handle_comment_event(event: JiraWebhookEvent):
+    """
+    Full MVP v1 pipeline:
+      Comment → Classify → Context → Draft → Store
+    """
     assert event.comment is not None
     assert event.issue is not None
 
+    # 1. Build Comment model from webhook event
     comment = Comment(
         comment_id=event.comment.id,
         issue_key=event.issue.key,
@@ -117,22 +141,60 @@ async def jira_webhook(request: Request):
         body=event.comment.body,
     )
 
+    # 2. Classify
+    classification = classifier.classify(comment)
     logger.info(
-        "Accepted comment %s on %s by %s",
-        comment.comment_id,
+        "Classified %s comment %s → %s (%.2f)",
         comment.issue_key,
-        comment.author,
+        comment.comment_id,
+        classification.comment_type.value,
+        classification.confidence,
     )
 
-    # TODO (Phase 2): classify comment
-    # TODO (Phase 3): collect context & draft response
+    # 3. Context collection (deferred if Jira creds not configured)
+    context = _collect_context_safe(comment.issue_key)
+
+    # 4. Draft response
+    draft = drafter.draft(comment, classification, context)
+    logger.info("Generated draft %s for %s", draft.draft_id, comment.issue_key)
+
+    # 5. Store
+    draft_store[draft.draft_id] = draft.model_dump(mode="json")
 
     return {
-        "status": "accepted",
+        "status": "processed",
         "event_id": event.event_id,
         "issue_key": comment.issue_key,
         "comment_id": comment.comment_id,
+        "classification": classification.comment_type.value,
+        "confidence": classification.confidence,
+        "draft_id": draft.draft_id,
     }
+
+
+def _collect_context_safe(issue_key: str):
+    """Try to collect context from Jira; return minimal stub on failure."""
+    try:
+        from src.agent.context_collector import ContextCollector
+
+        collector = ContextCollector()
+        return collector.collect(issue_key)
+    except Exception as exc:
+        logger.warning("Context collection skipped (%s) – using stub", exc)
+        from src.models.context import IssueContext, ContextCollectionResult
+
+        return ContextCollectionResult(
+            issue_context=IssueContext(
+                issue_key=issue_key,
+                summary="",
+                description="",
+                issue_type="Bug",
+                status="Open",
+                priority="Medium",
+            ),
+            collection_timestamp=datetime.now(timezone.utc),
+            collection_duration_ms=0.0,
+        )
 
 #  Draft retrieval   
 @app.get("/drafts/{draft_id}")
@@ -152,11 +214,7 @@ async def list_drafts(issue_key: Optional[str] = None):
         drafts = [d for d in drafts if d.get("issue_key") == issue_key]
     return {"count": len(drafts), "drafts": drafts}
 
-
-# ===================================================================== #
-#  Approval endpoints                                                    #
-# ===================================================================== #
-
+#  Approval endpoint
 @app.post("/approve")
 async def approve_draft(request: Request):
     """
