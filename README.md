@@ -28,11 +28,11 @@ An AI assistant that generates context-aware draft replies to developer comments
 - [x] Suggested labels & actions — auto-suggested per classification type
 - [x] Tests — context collector & drafter unit tests
 
-### 🔲 Phase 4: Full Pipeline & Approval Workflow (`phase/step-4`)
-- [ ] Full pipeline orchestration — webhook → filter → classify → context → draft → store
-- [ ] Draft store & API — `GET /drafts`, `GET /drafts/{id}`, filter by issue key
-- [ ] Approval workflow — `POST /approve`, `POST /reject` with feedback
-- [ ] Tests — end-to-end pipeline tests via FastAPI TestClient
+### Phase 4: Full Pipeline & Approval Workflow
+- [x] Full pipeline orchestration — webhook → filter → classify → context → draft → store
+- [x] Draft store & API — `GET /drafts`, `GET /drafts/{id}`, filter by issue key
+- [x] Approval workflow — `POST /approve`, `POST /reject` with feedback
+- [x] Tests — end-to-end pipeline tests via FastAPI TestClient
 
 ### 🔲 Phase 5: Notifications (`phase/step-5`)
 - [ ] Notifications — optional Teams webhook cards + Email (SMTP) on draft generated / approved / rejected
