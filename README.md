@@ -2,7 +2,7 @@
 
 **Intern Project 2026** — Nagasai & Yousef
 
-An AI assistant that generates context-aware draft replies to developer comments on Jira defects, using keyword heuristics with optional Copilot SDK refinement.
+An AI assistant that generates context-aware draft replies to developer comments on Jira defects, using keyword heuristics with optional Copilot SDK.
 
 ---
 
