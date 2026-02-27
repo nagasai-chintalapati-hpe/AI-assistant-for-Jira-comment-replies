@@ -122,6 +122,8 @@ class ResponseDrafter:
             created_by="system",
             body=draft_body,
             status=DraftStatus.GENERATED,
+            suggested_actions=self._suggest_actions(classification),
+            suggested_labels=self._suggest_labels(classification),
             confidence_score=classification.confidence,
             citations=citations,
         )
@@ -190,10 +192,7 @@ class ResponseDrafter:
             logger.warning("Template substitution key missing: %s", exc)
             return template  # return raw template on failure
 
-    # ------------------------------------------------------------------ #
-    #  Evidence & citation helpers                                       #
-    # ------------------------------------------------------------------ #
-
+    #  Evidence & citation helpers   
     @staticmethod
     def _format_existing_evidence(context: ContextCollectionResult) -> str:
         """Format attachments and Jenkins links as bullet list."""
@@ -222,3 +221,38 @@ class ResponseDrafter:
             for url in context.jenkins_links:
                 citations.append({"source": "Jenkins", "url": url})
         return citations
+
+    # ------------------------------------------------------------------ #
+    #  Suggested labels & actions                                        #
+    # ------------------------------------------------------------------ #
+
+    @staticmethod
+    def _suggest_actions(classification: CommentClassification) -> list[dict[str, str]]:
+        """Suggest Jira actions based on classification."""
+        actions: list[dict[str, str]] = []
+        ctype = classification.comment_type
+
+        if ctype == CommentType.FIXED_VALIDATE:
+            actions.append({"action": "transition", "value": "Ready for QA"})
+        elif ctype == CommentType.CANNOT_REPRODUCE:
+            actions.append({"action": "request_info", "value": "environment"})
+
+        return actions
+
+    @staticmethod
+    def _suggest_labels(classification: CommentClassification) -> list[str]:
+        """Suggest labels based on classification."""
+        labels: list[str] = []
+
+        if classification.missing_context:
+            labels.append("needs-info")
+
+        label_map: dict[CommentType, str] = {
+            CommentType.CANNOT_REPRODUCE: "cannot-reproduce",
+            CommentType.FIXED_VALIDATE: "fixed-validate",
+            CommentType.BY_DESIGN: "by-design",
+        }
+        if classification.comment_type in label_map:
+            labels.append(label_map[classification.comment_type])
+
+        return labels
