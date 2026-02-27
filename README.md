@@ -8,7 +8,7 @@ An AI assistant that generates context-aware draft replies to developer comments
 
 ## MVP v1 — Feature Roadmap
 
-### ✅ Phase 1: Architecture & Scaffolding
+### Phase 1: Architecture & Scaffolding
 - [x] Project structure, config, `.env` template
 - [x] Core data models — Comment, Classification, Context, Draft, Webhook
 - [x] Jira integration — full REST API client (`JiraClient`)
@@ -16,17 +16,17 @@ An AI assistant that generates context-aware draft replies to developer comments
 - [x] Event filtering — gates on issue type (Bug/Defect), status, trigger keywords, idempotency
 - [x] Tests — Jira client & webhook filter
 
-### ✅ Phase 2: Comment Classification (Current)
+### Phase 2: Comment Classification
 - [x] Comment classification — 4 buckets via keyword heuristics + optional Copilot SDK
 - [x] Tests — classifier unit tests
 
-### 🔲 Phase 3: Context Collection & Draft Generation (`phase/step-3`)
-- [ ] Context retrieval — Jira issue fields, last N comments, attachments, linked issues, changelog
-- [ ] Jenkins link detection — extracts console-log URLs from descriptions & comments
-- [ ] Draft generation — template-per-bucket with context substitution + optional Copilot SDK polish
-- [ ] Evidence & citations — attachments and Jenkins logs tracked per draft
-- [ ] Suggested labels & actions — auto-suggested per classification type
-- [ ] Tests — context collector & drafter unit tests
+### Phase 3: Context Collection & Draft Generation
+- [x] Context retrieval — Jira issue fields, last N comments, attachments, linked issues, changelog
+- [x] Jenkins link detection — extracts console-log URLs from descriptions & comments
+- [x] Draft generation — template-per-bucket with context substitution + optional Copilot SDK polish
+- [x] Evidence & citations — attachments and Jenkins logs tracked per draft
+- [x] Suggested labels & actions — auto-suggested per classification type
+- [x] Tests — context collector & drafter unit tests
 
 ### 🔲 Phase 4: Full Pipeline & Approval Workflow (`phase/step-4`)
 - [ ] Full pipeline orchestration — webhook → filter → classify → context → draft → store
