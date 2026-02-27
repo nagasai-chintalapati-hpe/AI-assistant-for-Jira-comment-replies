@@ -4,7 +4,7 @@
 
 - Python 3.10+
 - Jira Cloud instance with API access
-- (Optional) Copilot SDK API key for AI-powered classification & refinement
+- Copilot SDK API key for AI-powered classification & refinement
 
 ## Installation
 
