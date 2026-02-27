@@ -21,10 +21,7 @@ from src.models.draft import Draft, DraftStatus
 
 logger = logging.getLogger(__name__)
 
-# ===================================================================== #
-#  Response templates – one per classification bucket                    #
-# ===================================================================== #
-
+#  Response templates – one per classification bucket 
 TEMPLATES: dict[CommentType, str] = {
     CommentType.CANNOT_REPRODUCE: (
         "Thanks for the update. We were able to reproduce on "
@@ -69,6 +66,14 @@ TEMPLATES: dict[CommentType, str] = {
         "**Issue:** {issue_key} – {summary}"
     ),
 }
+#  Copilot SDK refinement prompt 
+
+_REFINE_SYSTEM = """\
+You are a QA engineer writing a reply to a developer comment on a Jira defect.
+Rewrite the DRAFT below so it sounds professional, concise, and empathetic.
+Keep all factual data (build numbers, links, steps) intact. Do NOT invent facts.
+Output ONLY the refined reply – no markdown code fences, no explanation.
+"""
 
 
 class ResponseDrafter:
@@ -86,10 +91,7 @@ class ResponseDrafter:
             except Exception as exc:
                 logger.warning("Could not initialise Copilot SDK drafter: %s", exc)
 
-    # ------------------------------------------------------------------ #
     #  Public API                                                         #
-    # ------------------------------------------------------------------ #
-
     def draft(
         self,
         comment: Comment,
@@ -101,8 +103,12 @@ class ResponseDrafter:
         # 1. Template-fill
         template_body = self._fill_template(comment, classification, context)
 
-        # 2. Use template as-is (Copilot SDK refinement added next)
-        draft_body = template_body
+        # 2. Optional Copilot SDK refinement
+        if self._client is not None:
+            refined = self._refine_with_copilot(template_body, comment)
+            draft_body = refined or template_body
+        else:
+            draft_body = template_body
 
         # 3. Assemble Draft
         return Draft(
@@ -117,9 +123,35 @@ class ResponseDrafter:
         )
 
     # ------------------------------------------------------------------ #
-    #  Template filling                                                   #
+    #  Copilot SDK refinement                                            #
     # ------------------------------------------------------------------ #
 
+    def _refine_with_copilot(self, draft_text: str, comment: Comment) -> Optional[str]:
+        """Optionally polish the template-filled draft with Copilot SDK."""
+        try:
+            response = self._client.chat.completions.create(  # type: ignore[union-attr]
+                model=self._model,
+                messages=[
+                    {"role": "system", "content": _REFINE_SYSTEM},
+                    {
+                        "role": "user",
+                        "content": (
+                            f"Original developer comment on {comment.issue_key}:\n"
+                            f'"""\n{comment.body}\n"""\n\n'
+                            f"DRAFT reply:\n"
+                            f'"""\n{draft_text}\n"""'
+                        ),
+                    },
+                ],
+                max_tokens=512,
+                temperature=0.3,
+            )
+            return response.choices[0].message.content.strip()
+        except Exception as exc:
+            logger.warning("Copilot SDK refinement failed: %s", exc)
+            return None
+    
+    #  Template filling                                                
     def _fill_template(
         self,
         comment: Comment,
