@@ -8,7 +8,7 @@ An AI assistant that generates context-aware draft replies to developer comments
 
 ## MVP v1 — Feature Roadmap
 
-### Phase 1: Architecture & Scaffolding (Current)
+### ✅ Phase 1: Architecture & Scaffolding
 - [x] Project structure, config, `.env` template
 - [x] Core data models — Comment, Classification, Context, Draft, Webhook
 - [x] Jira integration — full REST API client (`JiraClient`)
@@ -16,9 +16,9 @@ An AI assistant that generates context-aware draft replies to developer comments
 - [x] Event filtering — gates on issue type (Bug/Defect), status, trigger keywords, idempotency
 - [x] Tests — Jira client & webhook filter
 
-### 🔲 Phase 2: Comment Classification (`phase/step-2`)
-- [ ] Comment classification — 4 buckets via keyword heuristics + optional Copilot SDK
-- [ ] Tests — classifier unit tests
+### ✅ Phase 2: Comment Classification (Current)
+- [x] Comment classification — 4 buckets via keyword heuristics + optional Copilot SDK
+- [x] Tests — classifier unit tests
 
 ### 🔲 Phase 3: Context Collection & Draft Generation (`phase/step-3`)
 - [ ] Context retrieval — Jira issue fields, last N comments, attachments, linked issues, changelog
