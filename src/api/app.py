@@ -14,6 +14,7 @@ from typing import Optional
 
 from src.models.webhook import JiraWebhookEvent
 from src.models.comment import Comment
+from src.models.draft import DraftStatus
 from src.api.event_filter import EventFilter
 
 logger = logging.getLogger(__name__)
@@ -51,11 +52,7 @@ async def health_check():
         "drafts_in_store": len(draft_store),
     }
 
-
-# ===================================================================== #
-#  Webhook endpoint                                                      #
-# ===================================================================== #
-
+#  Webhook endpoint     
 @app.post("/webhook/jira")
 async def jira_webhook(request: Request):
     """
@@ -154,6 +151,64 @@ async def list_drafts(issue_key: Optional[str] = None):
     if issue_key:
         drafts = [d for d in drafts if d.get("issue_key") == issue_key]
     return {"count": len(drafts), "drafts": drafts}
+
+
+# ===================================================================== #
+#  Approval endpoints                                                    #
+# ===================================================================== #
+
+@app.post("/approve")
+async def approve_draft(request: Request):
+    """
+    Approve a draft response.
+    On approval the draft is marked and (optionally) posted to Jira.
+    """
+    try:
+        payload = await request.json()
+        draft_id = payload.get("draft_id")
+        approved_by = payload.get("approved_by")
+
+        if draft_id not in draft_store:
+            raise HTTPException(status_code=404, detail="Draft not found")
+
+        draft_store[draft_id]["status"] = DraftStatus.APPROVED.value
+        draft_store[draft_id]["approved_by"] = approved_by
+        draft_store[draft_id]["approved_at"] = datetime.now(timezone.utc).isoformat()
+
+        logger.info("Draft %s approved by %s", draft_id, approved_by)
+
+        # TODO: Post comment to Jira via JiraClient.add_comment()
+
+        return {"status": "approved", "draft_id": draft_id}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error("Error approving draft: %s", e)
+        raise HTTPException(status_code=500, detail="Failed to approve draft")
+
+
+@app.post("/reject")
+async def reject_draft(request: Request):
+    """Reject a draft response with optional feedback."""
+    try:
+        payload = await request.json()
+        draft_id = payload.get("draft_id")
+        feedback = payload.get("feedback", "")
+
+        if draft_id not in draft_store:
+            raise HTTPException(status_code=404, detail="Draft not found")
+
+        draft_store[draft_id]["status"] = DraftStatus.REJECTED.value
+        draft_store[draft_id]["feedback"] = feedback
+
+        logger.info("Draft %s rejected. Feedback: %s", draft_id, feedback)
+
+        return {"status": "rejected", "draft_id": draft_id}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error("Error rejecting draft: %s", e)
+        raise HTTPException(status_code=500, detail="Failed to reject draft")
 
 
 if __name__ == "__main__":
