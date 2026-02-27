@@ -110,7 +110,10 @@ class ResponseDrafter:
         else:
             draft_body = template_body
 
-        # 3. Assemble Draft
+        # 3. Build citations from context
+        citations = self._build_citations(context)
+
+        # 4. Assemble Draft
         return Draft(
             draft_id=f"draft_{int(datetime.now(timezone.utc).timestamp())}",
             issue_key=comment.issue_key,
@@ -120,12 +123,10 @@ class ResponseDrafter:
             body=draft_body,
             status=DraftStatus.GENERATED,
             confidence_score=classification.confidence,
+            citations=citations,
         )
 
-    # ------------------------------------------------------------------ #
-    #  Copilot SDK refinement                                            #
-    # ------------------------------------------------------------------ #
-
+    #  Copilot SDK refinement     
     def _refine_with_copilot(self, draft_text: str, comment: Comment) -> Optional[str]:
         """Optionally polish the template-filled draft with Copilot SDK."""
         try:
@@ -174,8 +175,8 @@ class ResponseDrafter:
             "feature_flag": "N/A",
             "component": (ctx.components[0] if ctx.components else "N/A"),
             "time_window": "last 24 h",
-            "existing_evidence": "• (none collected yet)",
-            "missing_items": "• (nothing flagged)",
+            "existing_evidence": self._format_existing_evidence(context),
+            "missing_items": self._format_missing(classification),
             "doc_link": "N/A",
             "expected_behavior": "See referenced documentation",
             "fix_version": (ctx.versions[0] if ctx.versions else "N/A"),
@@ -188,3 +189,36 @@ class ResponseDrafter:
         except KeyError as exc:
             logger.warning("Template substitution key missing: %s", exc)
             return template  # return raw template on failure
+
+    # ------------------------------------------------------------------ #
+    #  Evidence & citation helpers                                       #
+    # ------------------------------------------------------------------ #
+
+    @staticmethod
+    def _format_existing_evidence(context: ContextCollectionResult) -> str:
+        """Format attachments and Jenkins links as bullet list."""
+        lines: list[str] = []
+        if context.issue_context.attached_files:
+            for att in context.issue_context.attached_files[:5]:
+                name = att.get("filename") or att.get("name", "attachment")
+                lines.append(f"• Attachment: {name}")
+        if context.jenkins_links:
+            for url in context.jenkins_links[:3]:
+                lines.append(f"• Jenkins log: {url}")
+        return "\n".join(lines) if lines else "• (none collected yet)"
+
+    @staticmethod
+    def _format_missing(classification: CommentClassification) -> str:
+        """Format missing context items as bullet list."""
+        if not classification.missing_context:
+            return "• (nothing flagged)"
+        return "\n".join(f"• {item}" for item in classification.missing_context)
+
+    @staticmethod
+    def _build_citations(context: ContextCollectionResult) -> list[dict[str, str]]:
+        """Build citation list from Jenkins links and other sources."""
+        citations: list[dict[str, str]] = []
+        if context.jenkins_links:
+            for url in context.jenkins_links:
+                citations.append({"source": "Jenkins", "url": url})
+        return citations
