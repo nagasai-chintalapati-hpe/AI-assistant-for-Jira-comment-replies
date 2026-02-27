@@ -222,9 +222,7 @@ class ResponseDrafter:
                 citations.append({"source": "Jenkins", "url": url})
         return citations
 
-    # ------------------------------------------------------------------ #
-    #  Suggested labels & actions                                        #
-    # ------------------------------------------------------------------ #
+    # Suggested labels & actions
 
     @staticmethod
     def _suggest_actions(classification: CommentClassification) -> list[dict[str, str]]:

@@ -112,7 +112,7 @@ async def jira_webhook(request: Request):
     except Exception:
         raise HTTPException(status_code=400, detail="Invalid JSON payload")
 
-    # --- parse -------------------------------------------------------- #
+    # Parse
     try:
         event = JiraWebhookEvent(**payload)
     except ValidationError as exc:
@@ -129,7 +129,7 @@ async def jira_webhook(request: Request):
         event.comment.id if event.comment else None,
     )
 
-    # --- filter ------------------------------------------------------- #
+    # Filter
     result = event_filter.evaluate(event)
     if not result.accepted:
         logger.info("Event filtered out: %s", result.reason)
@@ -139,13 +139,11 @@ async def jira_webhook(request: Request):
             "event_id": result.event_id,
         }
 
-    # --- orchestrate -------------------------------------------------- #
+    # Orchestrate
     return await handle_comment_event(event)
 
 
-# ===================================================================== #
-#  Orchestration                                                         #
-# ===================================================================== #
+# Orchestration
 
 async def handle_comment_event(event: JiraWebhookEvent):
     """
