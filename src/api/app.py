@@ -10,6 +10,7 @@ from fastapi.responses import JSONResponse
 from pydantic import ValidationError
 import logging
 from datetime import datetime, timezone
+from typing import Optional
 
 from src.models.webhook import JiraWebhookEvent
 from src.models.comment import Comment
@@ -21,18 +22,21 @@ logger = logging.getLogger(__name__)
 
 event_filter = EventFilter()
 
+# In-memory draft store (MVP v1)
+draft_store: dict[str, dict] = {}
+
 
 @asynccontextmanager
 async def lifespan(app_instance: FastAPI):
     """Application lifespan — startup / shutdown."""
-    logger.info("Starting Jira Comment Assistant API (v0.1.0)")
+    logger.info("Starting Jira Comment Assistant API (v0.2.0)")
     yield
 
 
 app = FastAPI(
     title="Jira Comment Assistant",
     description="AI assistant for responding to Jira defect comments",
-    version="0.1.0",
+    version="0.2.0",
     lifespan=lifespan,
 )
 
@@ -43,7 +47,8 @@ async def health_check():
     return {
         "status": "healthy",
         "timestamp": datetime.now(timezone.utc).isoformat(),
-        "version": "0.1.0",
+        "version": "0.2.0",
+        "drafts_in_store": len(draft_store),
     }
 
 
@@ -131,6 +136,24 @@ async def jira_webhook(request: Request):
         "issue_key": comment.issue_key,
         "comment_id": comment.comment_id,
     }
+
+#  Draft retrieval   
+@app.get("/drafts/{draft_id}")
+async def get_draft(draft_id: str):
+    """Retrieve a stored draft by ID."""
+    draft = draft_store.get(draft_id)
+    if draft is None:
+        raise HTTPException(status_code=404, detail="Draft not found")
+    return draft
+
+
+@app.get("/drafts")
+async def list_drafts(issue_key: Optional[str] = None):
+    """List all drafts, optionally filtered by issue_key."""
+    drafts = list(draft_store.values())
+    if issue_key:
+        drafts = [d for d in drafts if d.get("issue_key") == issue_key]
+    return {"count": len(drafts), "drafts": drafts}
 
 
 if __name__ == "__main__":
