@@ -19,7 +19,7 @@ from src.models.webhook import JiraWebhookEvent
 
 logger = logging.getLogger(__name__)
 
-# ---- configurable allow-lists ------------------------------------------ #
+# Configurable allow-lists
 
 ALLOWED_ISSUE_TYPES: set[str] = {"Bug", "Defect", "bug", "defect"}
 
@@ -75,9 +75,7 @@ class EventFilter:
     def __init__(self) -> None:
         self._seen_event_ids: set[str] = set()
 
-    # ------------------------------------------------------------------ #
-    #  Public API                                                         #
-    # ------------------------------------------------------------------ #
+    # Public API
 
     def evaluate(self, event: JiraWebhookEvent) -> FilterResult:
         """Run all filter rules against *event* and return a FilterResult."""
@@ -135,9 +133,7 @@ class EventFilter:
         logger.info("Event %s accepted for processing", eid)
         return FilterResult(accepted=True, reason="accepted", event_id=eid)
 
-    # ------------------------------------------------------------------ #
-    #  Private helpers                                                    #
-    # ------------------------------------------------------------------ #
+    # Private helpers
 
     @staticmethod
     def _comment_is_relevant(event: JiraWebhookEvent) -> bool:
