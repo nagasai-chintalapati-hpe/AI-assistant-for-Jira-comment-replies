@@ -1,14 +1,8 @@
-"""Draft generator – creates responses using templates + Copilot SDK.
-
-MVP v1 flow:
-  1. Select a response template based on the classification bucket.
-  2. Fill the template with context (issue fields, evidence, citations).
-  3. Optionally refine via Copilot SDK for natural language polish.
-  4. Return a Draft with citations and suggested actions.
-"""
+"""Draft generator – creates responses using templates + Copilot SDK."""
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from datetime import datetime, timezone
@@ -21,238 +15,166 @@ from src.models.draft import Draft, DraftStatus
 
 logger = logging.getLogger(__name__)
 
-#  Response templates – one per classification bucket 
+# Response templates per classification type
 TEMPLATES: dict[CommentType, str] = {
     CommentType.CANNOT_REPRODUCE: (
-        "Thanks for the update. We were able to reproduce on "
-        "**{environment}** (Build {build_version}).\n\n"
+        "Thanks for the update. We tried on **{environment}** (Build {build_version}).\n\n"
         "**Observed:** {observation}\n\n"
-        "**Repro steps (minimal):**\n{repro_steps}\n\n"
+        "**Steps:**\n{repro_steps}\n\n"
         "Could you confirm:\n"
+        "• Your environment (OS, browser)?\n"
         "• Which build/version did you test on?\n"
-        "• Your environment (OS, browser, tenant config)?\n"
-        "• Whether feature flag `{feature_flag}` is enabled?\n\n"
-        "**Next:** If you share your test env/build, we can validate parity; "
-        "otherwise we recommend retesting on the latest staging build."
+        "• Feature flag `{feature_flag}` enabled?\n\n"
+        "Please retest on the latest staging build."
     ),
     CommentType.NEED_MORE_INFO: (
-        "Thanks for flagging this. Here's what we already have:\n"
+        "Thanks for flagging this. We have:\n"
         "{existing_evidence}\n\n"
-        "We're still missing:\n{missing_items}\n\n"
-        "Could you please provide:\n"
+        "We need:\n{missing_items}\n\n"
+        "Please provide:\n"
         "• Exact repro steps + correlation IDs\n"
-        "• Logs for **{component}** in the time window **{time_window}**\n\n"
-        "Once we have this, we'll be able to narrow down the root cause."
+        "• **{component}** logs for **{time_window}**\n\n"
+        "This will help us identify the root cause."
     ),
     CommentType.BY_DESIGN: (
-        "Thanks for raising this. Based on the specification, this is "
-        "**expected behavior**.\n\n"
+        "Thanks for raising this. This is **expected behavior**.\n\n"
         "**Reference:** {doc_link}\n\n"
-        "The documented behavior states:\n> {expected_behavior}\n\n"
-        "If you believe this doesn't match the acceptance criteria, could you "
-        "point us to the specific AC? We can then assess whether a doc update "
-        "or UX clarification is needed."
+        "Per specification:\n> {expected_behavior}\n\n"
+        "If this doesn't match acceptance criteria, please point us to the "
+        "specific requirement so we can assess doc updates."
     ),
     CommentType.FIXED_VALIDATE: (
         "A fix has been deployed.\n\n"
-        "**Fix version/commit/build:** {fix_version}\n\n"
-        "**Focused retest checklist:**\n{retest_checklist}\n\n"
+        "**Version/Build:** {fix_version}\n\n"
+        "**Retest checklist:**\n{retest_checklist}\n\n"
         "Please verify in **{target_env}** and update the ticket status."
     ),
-
     CommentType.OTHER: (
         "Thank you for your comment. We're reviewing this and will "
         "follow up shortly.\n\n"
         "**Issue:** {issue_key} – {summary}"
     ),
 }
-#  Copilot SDK refinement prompt 
 
 _REFINE_SYSTEM = """\
-You are a QA engineer writing a reply to a developer comment on a Jira defect.
-Rewrite the DRAFT below so it sounds professional, concise, and empathetic.
-Keep all factual data (build numbers, links, steps) intact. Do NOT invent facts.
-Output ONLY the refined reply – no markdown code fences, no explanation.
+You are a QA engineer writing a reply on a Jira defect.
+Rewrite the draft below to be professional, concise, and empathetic.
+Keep all factual data (build numbers, links) intact. Do NOT invent facts.
+Output ONLY the refined text – no markdown or explanation.
 """
 
 
 class ResponseDrafter:
     """Generates draft responses using templates + optional Copilot SDK refinement."""
 
-    def __init__(self, api_key: Optional[str] = None, model: str = "gpt-4"):
+    def __init__(self, api_key: Optional[str] = None, model: str = "claude-sonnet-4.5"):
+        """Initialize drafter.
+        
+        Args:
+            api_key: GitHub Copilot SDK API key (optional).
+            model: LLM model to use (default: claude-sonnet-4.5).
+        """
         self._client = None
         self._model = model
         if api_key:
             try:
-                from openai import OpenAI  # Copilot SDK compatible client
+                from copilot import CopilotClient
+                self._client = CopilotClient()
+                logger.info("Copilot SDK drafter initialized (model=%s)", model)
+            except ImportError:
+                logger.warning("copilot SDK not available; using template-only mode")
 
-                self._client = OpenAI(api_key=api_key)
-                logger.info("Copilot SDK drafter initialised (model=%s)", model)
-            except Exception as exc:
-                logger.warning("Could not initialise Copilot SDK drafter: %s", exc)
-
-    #  Public API                                                         #
-    def draft(
+    async def draft(
         self,
         comment: Comment,
         classification: CommentClassification,
         context: ContextCollectionResult,
     ) -> Draft:
-        """Generate a draft response to a comment."""
-
-        # 1. Template-fill
-        template_body = self._fill_template(comment, classification, context)
-
-        # 2. Optional Copilot SDK refinement
-        if self._client is not None:
-            refined = self._refine_with_copilot(template_body, comment)
-            draft_body = refined or template_body
-        else:
-            draft_body = template_body
-
-        # 3. Build citations from context
-        citations = self._build_citations(context)
-
-        # 4. Assemble Draft
+        """Generate a draft response.
+        
+        Args:
+            comment: The original comment.
+            classification: Classification result.
+            context: Collected context (issue fields, evidence).
+            
+        Returns:
+            Draft with suggested content and citations.
+        """
+        # Get template for this classification type
+        template = TEMPLATES.get(
+            classification.comment_type,
+            TEMPLATES[CommentType.OTHER]
+        )
+        
+        # Build context dict for template filling
+        context_dict = {
+            "issue_key": comment.issue_key,
+            "summary": context.issue.fields.summary if context.issue else "",
+            "environment": context.environment or "staging",
+            "build_version": context.build_version or "latest",
+            "observation": context.observation or "Issue reproduced",
+            "repro_steps": context.repro_steps or "1. See issue description",
+            "feature_flag": context.feature_flag or "N/A",
+            "existing_evidence": context.existing_evidence or "None",
+            "missing_items": context.missing_context or [],
+            "component": context.component or "system",
+            "time_window": context.time_window or "last 24h",
+            "doc_link": context.doc_link or "",
+            "expected_behavior": context.expected_behavior or "",
+            "fix_version": context.fix_version or "",
+            "retest_checklist": context.retest_checklist or "",
+            "target_env": context.target_env or "production",
+        }
+        
+        # Fill template
+        content = template.format(**context_dict)
+        
+        # Optionally refine with Copilot
+        if self._client:
+            refined = await self._refine_with_copilot(content)
+            if refined:
+                content = refined
+        
         return Draft(
-            draft_id=f"draft_{int(datetime.now(timezone.utc).timestamp())}",
+            comment_id=comment.comment_id,
             issue_key=comment.issue_key,
-            in_reply_to_comment_id=comment.comment_id,
-            created_at=datetime.now(timezone.utc),
-            created_by="system",
-            body=draft_body,
-            status=DraftStatus.GENERATED,
+            content=content,
+            status=DraftStatus.PENDING_REVIEW,
+            classification_type=classification.comment_type,
+            citations=context.citations or [],
+            timestamp=datetime.now(timezone.utc),
             suggested_actions=self._suggest_actions(classification),
-            suggested_labels=self._suggest_labels(classification),
-            confidence_score=classification.confidence,
-            citations=citations,
         )
 
-    #  Copilot SDK refinement     
-    def _refine_with_copilot(self, draft_text: str, comment: Comment) -> Optional[str]:
-        """Optionally polish the template-filled draft with Copilot SDK."""
+    async def _refine_with_copilot(self, draft_text: str) -> Optional[str]:
+        """Refine draft using Copilot SDK."""
         try:
-            response = self._client.chat.completions.create(  # type: ignore[union-attr]
-                model=self._model,
-                messages=[
-                    {"role": "system", "content": _REFINE_SYSTEM},
-                    {
-                        "role": "user",
-                        "content": (
-                            f"Original developer comment on {comment.issue_key}:\n"
-                            f'"""\n{comment.body}\n"""\n\n'
-                            f"DRAFT reply:\n"
-                            f'"""\n{draft_text}\n"""'
-                        ),
-                    },
-                ],
-                max_tokens=512,
-                temperature=0.3,
+            loop = asyncio.get_event_loop()
+            response = await loop.run_in_executor(
+                None,
+                lambda: self._client.chat.completions.create(
+                    model=self._model,
+                    messages=[
+                        {"role": "system", "content": _REFINE_SYSTEM},
+                        {"role": "user", "content": draft_text},
+                    ],
+                    max_tokens=512,
+                    temperature=0.3,
+                ),
             )
             return response.choices[0].message.content.strip()
-        except Exception as exc:
-            logger.warning("Copilot SDK refinement failed: %s", exc)
+        except Exception as e:
+            logger.warning("Copilot refinement failed: %s", e)
             return None
-    
-    #  Template filling                                                
-    def _fill_template(
-        self,
-        comment: Comment,
-        classification: CommentClassification,
-        context: ContextCollectionResult,
-    ) -> str:
-        """Select and fill the template for *classification.comment_type*."""
 
-        ctx = context.issue_context
-        template = TEMPLATES.get(classification.comment_type, TEMPLATES[CommentType.OTHER])
-
-        # Build a safe substitution dict with fallbacks
-        subs: dict[str, str] = {
-            "issue_key": ctx.issue_key,
-            "summary": ctx.summary,
-            "environment": ctx.environment or "N/A",
-            "build_version": (ctx.versions[0] if ctx.versions else "N/A"),
-            "observation": "See attached evidence",
-            "repro_steps": "1. (auto-detected from ticket – please verify)",
-            "feature_flag": "N/A",
-            "component": (ctx.components[0] if ctx.components else "N/A"),
-            "time_window": "last 24 h",
-            "existing_evidence": self._format_existing_evidence(context),
-            "missing_items": self._format_missing(classification),
-            "doc_link": "N/A",
-            "expected_behavior": "See referenced documentation",
-            "fix_version": (ctx.versions[0] if ctx.versions else "N/A"),
-            "retest_checklist": "1. Verify the reported scenario end-to-end",
-            "target_env": ctx.environment or "staging",
+    @staticmethod
+    def _suggest_actions(classification: CommentClassification) -> list[str]:
+        """Suggest next actions based on classification."""
+        mapping = {
+            CommentType.CANNOT_REPRODUCE: ["Request environment details", "Share repro steps"],
+            CommentType.NEED_MORE_INFO: ["Request logs", "Provide correlation ID"],
+            CommentType.FIXED_VALIDATE: ["Create retest checklist", "Deploy to staging"],
+            CommentType.BY_DESIGN: ["Review acceptance criteria", "Update documentation"],
+            CommentType.DUPLICATE: ["Link related ticket", "Consolidate discussions"],
         }
-
-        try:
-            return template.format_map(subs)
-        except KeyError as exc:
-            logger.warning("Template substitution key missing: %s", exc)
-            return template  # return raw template on failure
-
-    #  Evidence & citation helpers   
-    @staticmethod
-    def _format_existing_evidence(context: ContextCollectionResult) -> str:
-        """Format attachments and Jenkins links as bullet list."""
-        lines: list[str] = []
-        if context.issue_context.attached_files:
-            for att in context.issue_context.attached_files[:5]:
-                name = att.get("filename") or att.get("name", "attachment")
-                lines.append(f"• Attachment: {name}")
-        if context.jenkins_links:
-            for url in context.jenkins_links[:3]:
-                lines.append(f"• Jenkins log: {url}")
-        return "\n".join(lines) if lines else "• (none collected yet)"
-
-    @staticmethod
-    def _format_missing(classification: CommentClassification) -> str:
-        """Format missing context items as bullet list."""
-        if not classification.missing_context:
-            return "• (nothing flagged)"
-        return "\n".join(f"• {item}" for item in classification.missing_context)
-
-    @staticmethod
-    def _build_citations(context: ContextCollectionResult) -> list[dict[str, str]]:
-        """Build citation list from Jenkins links and other sources."""
-        citations: list[dict[str, str]] = []
-        if context.jenkins_links:
-            for url in context.jenkins_links:
-                citations.append({"source": "Jenkins", "url": url})
-        return citations
-
-    # ------------------------------------------------------------------ #
-    #  Suggested labels & actions                                        #
-    # ------------------------------------------------------------------ #
-
-    @staticmethod
-    def _suggest_actions(classification: CommentClassification) -> list[dict[str, str]]:
-        """Suggest Jira actions based on classification."""
-        actions: list[dict[str, str]] = []
-        ctype = classification.comment_type
-
-        if ctype == CommentType.FIXED_VALIDATE:
-            actions.append({"action": "transition", "value": "Ready for QA"})
-        elif ctype == CommentType.CANNOT_REPRODUCE:
-            actions.append({"action": "request_info", "value": "environment"})
-
-        return actions
-
-    @staticmethod
-    def _suggest_labels(classification: CommentClassification) -> list[str]:
-        """Suggest labels based on classification."""
-        labels: list[str] = []
-
-        if classification.missing_context:
-            labels.append("needs-info")
-
-        label_map: dict[CommentType, str] = {
-            CommentType.CANNOT_REPRODUCE: "cannot-reproduce",
-            CommentType.FIXED_VALIDATE: "fixed-validate",
-            CommentType.BY_DESIGN: "by-design",
-        }
-        if classification.comment_type in label_map:
-            labels.append(label_map[classification.comment_type])
-
-        return labels
+        return mapping.get(classification.comment_type, [])

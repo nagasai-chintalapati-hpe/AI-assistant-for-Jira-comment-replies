@@ -26,9 +26,9 @@ logger = logging.getLogger(__name__)
 
 event_filter = EventFilter()
 
-# Copilot SDK API key — optional; leave empty for keyword-only mode
+# Copilot SDK configuration (optional; uses keywords fallback if not provided)
 _COPILOT_API_KEY: Optional[str] = os.getenv("COPILOT_API_KEY")
-_COPILOT_MODEL: str = os.getenv("COPILOT_MODEL", "gpt-4")
+_COPILOT_MODEL: str = os.getenv("COPILOT_MODEL", "claude-sonnet-4.5")
 
 classifier = CommentClassifier(api_key=_COPILOT_API_KEY, model=_COPILOT_MODEL)
 drafter = ResponseDrafter(api_key=_COPILOT_API_KEY, model=_COPILOT_MODEL)
@@ -142,7 +142,7 @@ async def handle_comment_event(event: JiraWebhookEvent):
     )
 
     # 2. Classify
-    classification = classifier.classify(comment)
+    classification = await classifier.classify(comment)
     logger.info(
         "Classified %s comment %s → %s (%.2f)",
         comment.issue_key,
@@ -155,7 +155,7 @@ async def handle_comment_event(event: JiraWebhookEvent):
     context = _collect_context_safe(comment.issue_key)
 
     # 4. Draft response
-    draft = drafter.draft(comment, classification, context)
+    draft = await drafter.draft(comment, classification, context)
     logger.info("Generated draft %s for %s", draft.draft_id, comment.issue_key)
 
     # 5. Store

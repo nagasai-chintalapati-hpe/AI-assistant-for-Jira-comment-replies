@@ -1,19 +1,8 @@
-"""Comment classifier – determines comment intent.
-
-MVP v1 strategy:
-  1. Try Copilot SDK for structured classification.
-  2. Fall back to keyword heuristics if the Copilot SDK is unavailable or low-confidence.
-
-Classification buckets (MVP v1):
-  • Cannot Repro
-  • Need Info / Logs
-  • Fixed — Validate
-  • By Design
-  • Other (fallback)
-"""
+"""Comment classification module using Copilot SDK with keyword fallback."""
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from typing import Optional
@@ -23,150 +12,130 @@ from src.models.classification import CommentClassification, CommentType
 
 logger = logging.getLogger(__name__)
 
-# ---- keyword rules (fallback) ----------------------------------------- #
-
-_KEYWORD_RULES: list[tuple[list[str], CommentType, str, list[str]]] = [
-    # (keywords, type, reasoning, missing_context)
+# Keyword-based classification fallback rules
+_KEYWORD_RULES = [
     (
-        ["cannot reproduce", "can't reproduce", "cannot repro", "can't repro",
-         "unable to reproduce", "not reproducible", "works on my machine"],
+        ("can't repro", "cannot repro", "cannot reproduce", "failed to reproduce"),
         CommentType.CANNOT_REPRODUCE,
-        "Developer indicates inability to reproduce the issue",
-        ["Environment details", "Reproduction steps", "Browser/OS version"],
+        "Developer cannot reproduce the issue.",
+        ["environment", "browser", "os", "steps"],
     ),
     (
-        ["need logs", "need more info", "provide logs", "attach logs",
-         "error log", "stack trace", "log file", "share logs",
-         "need environment", "need details"],
+        ("need more info", "need info", "missing context", "unclear"),
         CommentType.NEED_MORE_INFO,
-        "Comment requests logs or diagnostic information",
-        ["Log attachments", "Error messages", "Correlation IDs"],
+        "More information needed from reporter.",
+        ["logs", "trace", "details"],
     ),
     (
-        ["fix ready", "fix deployed", "fix released", "fix available",
-         "please validate", "please verify", "ready for testing",
-         "fixed in", "fix merged", "already fixed", "fixed in build",
-         "resolved in"],
+        ("fixed", "released", "deployed", "merged"),
         CommentType.FIXED_VALIDATE,
-        "Developer indicates a fix is ready for validation",
+        "Issue appears fixed; validation requested.",
+        ["build", "version", "release"],
+    ),
+    (
+        ("by design", "expected", "working as intended", "not a bug"),
+        CommentType.BY_DESIGN,
+        "Issue is by design, not a bug.",
         [],
     ),
     (
-        ["as designed", "by design", "expected behavior", "expected behaviour",
-         "working as intended", "not a defect"],
-        CommentType.BY_DESIGN,
-        "Comment suggests this is expected / by-design behavior",
-        [],
+        ("duplicate", "dupe", "same as"),
+        CommentType.DUPLICATE,
+        "Issue duplicates another ticket.",
+        ["ticket"],
     ),
 ]
 
-# ---- Copilot SDK classification prompt --------------------------------- #
-
 _COPILOT_SYSTEM_PROMPT = """\
-You are a Jira comment classifier for a QA team. Given a developer comment on a
-bug ticket, classify it into exactly ONE of these categories:
+Classify this Jira comment into ONE category: cannot_reproduce, need_more_info, \
+fixed_validate, by_design, duplicate, not_a_bug, blocked, status_update, or other.
 
-  cannot_reproduce, need_more_info, fixed_validate, by_design, other
-
-Respond ONLY with valid JSON – no markdown, no explanation:
+Respond ONLY with valid JSON (no markdown):
 {
   "comment_type": "<category>",
   "confidence": <0.0-1.0>,
   "reasoning": "<one sentence>",
-  "missing_context": ["<item>", ...],
-  "suggested_questions": ["<question>", ...]
+  "missing_context": ["<item>"],
+  "suggested_questions": ["<question>"]
 }
 """
 
 
 class CommentClassifier:
-    """Classifies developer comments into predefined types.
+    """Classifies developer comments using Copilot SDK or keyword fallback."""
 
-    Attempts Copilot SDK-based classification first; falls back to keyword rules.
-    """
-
-    def __init__(self, api_key: Optional[str] = None, model: str = "gpt-4"):
-        """
+    def __init__(self, api_key: Optional[str] = None, model: str = "claude-sonnet-4.5"):
+        """Initialize classifier.
+        
         Args:
-            api_key: Copilot SDK API key.  If *None* the classifier
-                     operates in keyword-only mode (safe for CI / tests).
-            model:   Model name to use via Copilot SDK.
+            api_key: GitHub Copilot SDK API key (optional).
+            model: LLM model to use (default: claude-sonnet-4.5).
         """
         self._client = None
         self._model = model
         if api_key:
             try:
-                from openai import OpenAI  # Copilot SDK compatible client
+                from copilot import CopilotClient
+                self._client = CopilotClient()
+                logger.info("Copilot SDK initialized (model=%s)", model)
+            except ImportError:
+                logger.warning("copilot SDK not available; using keyword fallback")
 
-                self._client = OpenAI(api_key=api_key)
-                logger.info("Copilot SDK classifier initialised (model=%s)", model)
-            except Exception as exc:
-                logger.warning("Could not initialise Copilot SDK (%s) – using keyword fallback", exc)
-
-    # ------------------------------------------------------------------ #
-    #  Public API                                                         #
-    # ------------------------------------------------------------------ #
-
-    def classify(self, comment: Comment) -> CommentClassification:
-        """Classify *comment* using Copilot SDK → keyword fallback chain."""
-
-        # 1. Try Copilot SDK
-        if self._client is not None:
-            sdk_result = self._classify_with_copilot(comment)
-            if sdk_result is not None and sdk_result.confidence >= 0.6:
-                return sdk_result
-            logger.info(
-                "Copilot SDK classification low-confidence (%.2f) – falling back to keywords",
-                sdk_result.confidence if sdk_result else 0,
-            )
-
-        # 2. Keyword fallback
+    async def classify(self, comment: Comment) -> CommentClassification:
+        """Classify a comment into a predefined type.
+        
+        Args:
+            comment: The comment to classify.
+            
+        Returns:
+            Classification with type and confidence score.
+        """
+        if self._client:
+            result = await self._classify_with_copilot(comment)
+            if result and result.confidence >= 0.6:
+                return result
+        
         return self._classify_with_keywords(comment)
 
-    # ------------------------------------------------------------------ #
-    #  Copilot SDK path                                                   #
-    # ------------------------------------------------------------------ #
-
-    def _classify_with_copilot(self, comment: Comment) -> Optional[CommentClassification]:
-        """Call Copilot SDK and parse structured output."""
+    async def _classify_with_copilot(self, comment: Comment) -> Optional[CommentClassification]:
+        """Classify using Copilot SDK."""
         try:
-            response = self._client.chat.completions.create(  # type: ignore[union-attr]
-                model=self._model,
-                messages=[
-                    {"role": "system", "content": _COPILOT_SYSTEM_PROMPT},
-                    {
-                        "role": "user",
-                        "content": (
-                            f"Comment on {comment.issue_key}:\n"
-                            f'"""\n{comment.body}\n"""'
-                        ),
-                    },
-                ],
-                max_tokens=256,
-                temperature=0.1,
+            # Create session for Copilot interaction
+            loop = asyncio.get_event_loop()
+            
+            response = await loop.run_in_executor(
+                None,
+                lambda: self._client.chat.completions.create(
+                    model=self._model,
+                    messages=[
+                        {"role": "system", "content": _COPILOT_SYSTEM_PROMPT},
+                        {
+                            "role": "user",
+                            "content": f"Issue {comment.issue_key}:\n\"\"\"\n{comment.body}\n\"\"\"",
+                        },
+                    ],
+                    max_tokens=256,
+                    temperature=0.1,
+                ),
             )
+            
             text = response.choices[0].message.content.strip()
             data = json.loads(text)
 
-            ctype = CommentType(data["comment_type"])
             return CommentClassification(
                 comment_id=comment.comment_id,
-                comment_type=ctype,
+                comment_type=CommentType(data["comment_type"]),
                 confidence=float(data.get("confidence", 0.7)),
                 reasoning=data.get("reasoning", ""),
                 missing_context=data.get("missing_context"),
                 suggested_questions=data.get("suggested_questions"),
             )
-        except Exception as exc:
-            logger.warning("Copilot SDK classification failed: %s", exc)
+        except Exception as e:
+            logger.warning("Copilot classification failed: %s", e)
             return None
 
-    # ------------------------------------------------------------------ #
-    #  Keyword path                                                       #
-    # ------------------------------------------------------------------ #
-
     def _classify_with_keywords(self, comment: Comment) -> CommentClassification:
-        """Rule-based classification via keyword matching."""
+        """Classify using keyword rules."""
         body_lower = comment.body.lower()
 
         for keywords, ctype, reasoning, missing in _KEYWORD_RULES:
@@ -177,37 +146,32 @@ class CommentClassifier:
                     confidence=0.85,
                     reasoning=reasoning,
                     missing_context=missing or None,
-                    suggested_questions=self._default_questions(ctype),
+                    suggested_questions=self._get_default_questions(ctype),
                 )
 
-        # No match
         return CommentClassification(
             comment_id=comment.comment_id,
             comment_type=CommentType.OTHER,
             confidence=0.50,
-            reasoning="Comment type could not be determined with high confidence",
+            reasoning="Could not determine type with confidence.",
         )
 
-    # ------------------------------------------------------------------ #
-    #  Helpers                                                            #
-    # ------------------------------------------------------------------ #
-
     @staticmethod
-    def _default_questions(ctype: CommentType) -> Optional[list[str]]:
-        """Return sensible follow-up questions per classification."""
-        mapping: dict[CommentType, list[str]] = {
+    def _get_default_questions(ctype: CommentType) -> Optional[list[str]]:
+        """Return suggested follow-up questions."""
+        mapping = {
             CommentType.CANNOT_REPRODUCE: [
-                "What is your environment (OS, browser version)?",
-                "Can you provide step-by-step reproduction steps?",
+                "What is your environment (OS, browser)?",
+                "Can you provide step-by-step reproduction?",
                 "Which build/version did you test on?",
             ],
             CommentType.NEED_MORE_INFO: [
-                "Can you attach the relevant log files?",
-                "What is the correlation ID or request ID?",
+                "Can you attach the log files?",
+                "What is the correlation ID?",
             ],
             CommentType.FIXED_VALIDATE: [
-                "Which build/version contains the fix?",
-                "What are the focused retest steps?",
+                "Which build contains the fix?",
+                "What are the retest steps?",
             ],
         }
         return mapping.get(ctype)
