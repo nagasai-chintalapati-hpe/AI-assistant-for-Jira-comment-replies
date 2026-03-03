@@ -107,23 +107,24 @@ class ResponseDrafter:
         )
         
         # Build context dict for template filling
+        issue = context.issue_context if context else None
         context_dict = {
             "issue_key": comment.issue_key,
-            "summary": context.issue.fields.summary if context.issue else "",
-            "environment": context.environment or "staging",
-            "build_version": context.build_version or "latest",
-            "observation": context.observation or "Issue reproduced",
-            "repro_steps": context.repro_steps or "1. See issue description",
-            "feature_flag": context.feature_flag or "N/A",
-            "existing_evidence": context.existing_evidence or "None",
-            "missing_items": context.missing_context or [],
-            "component": context.component or "system",
-            "time_window": context.time_window or "last 24h",
-            "doc_link": context.doc_link or "",
-            "expected_behavior": context.expected_behavior or "",
-            "fix_version": context.fix_version or "",
-            "retest_checklist": context.retest_checklist or "",
-            "target_env": context.target_env or "production",
+            "summary": issue.summary if issue else "",
+            "environment": issue.environment if issue else "staging",
+            "build_version": "latest",
+            "observation": "Issue reproduced",
+            "repro_steps": "1. See issue description",
+            "feature_flag": "N/A",
+            "existing_evidence": "None",
+            "missing_items": [],
+            "component": issue.components[0] if issue and issue.components else "system",
+            "time_window": "last 24h",
+            "doc_link": "",
+            "expected_behavior": "",
+            "fix_version": "",
+            "retest_checklist": "",
+            "target_env": "production",
         }
         
         # Fill template
@@ -136,14 +137,16 @@ class ResponseDrafter:
                 content = refined
         
         return Draft(
-            comment_id=comment.comment_id,
+            draft_id=f"draft_{int(datetime.now(timezone.utc).timestamp())}",
             issue_key=comment.issue_key,
-            content=content,
-            status=DraftStatus.PENDING_REVIEW,
-            classification_type=classification.comment_type,
-            citations=context.citations or [],
-            timestamp=datetime.now(timezone.utc),
-            suggested_actions=self._suggest_actions(classification),
+            in_reply_to_comment_id=comment.comment_id,
+            created_at=datetime.now(timezone.utc),
+            created_by="system",
+            body=content,
+            status=DraftStatus.GENERATED,
+            citations=[],
+            suggested_actions=[{"action": a} for a in self._suggest_actions(classification)],
+            confidence_score=classification.confidence,
         )
 
     async def _refine_with_copilot(self, draft_text: str) -> Optional[str]:
@@ -175,6 +178,5 @@ class ResponseDrafter:
             CommentType.NEED_MORE_INFO: ["Request logs", "Provide correlation ID"],
             CommentType.FIXED_VALIDATE: ["Create retest checklist", "Deploy to staging"],
             CommentType.BY_DESIGN: ["Review acceptance criteria", "Update documentation"],
-            CommentType.DUPLICATE: ["Link related ticket", "Consolidate discussions"],
         }
         return mapping.get(classification.comment_type, [])

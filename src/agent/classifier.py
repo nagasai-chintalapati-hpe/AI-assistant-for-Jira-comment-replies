@@ -15,13 +15,13 @@ logger = logging.getLogger(__name__)
 # Keyword-based classification fallback rules
 _KEYWORD_RULES = [
     (
-        ("can't repro", "cannot repro", "cannot reproduce", "failed to reproduce"),
+        ("can't repro", "cannot repro", "cannot reproduce", "failed to reproduce", "unable to reproduce"),
         CommentType.CANNOT_REPRODUCE,
         "Developer cannot reproduce the issue.",
         ["environment", "browser", "os", "steps"],
     ),
     (
-        ("need more info", "need info", "missing context", "unclear"),
+        ("need more info", "need info", "missing context", "unclear", "logs", "provide", "trace", "correlation"),
         CommentType.NEED_MORE_INFO,
         "More information needed from reporter.",
         ["logs", "trace", "details"],
@@ -37,12 +37,6 @@ _KEYWORD_RULES = [
         CommentType.BY_DESIGN,
         "Issue is by design, not a bug.",
         [],
-    ),
-    (
-        ("duplicate", "dupe", "same as"),
-        CommentType.DUPLICATE,
-        "Issue duplicates another ticket.",
-        ["ticket"],
     ),
 ]
 
@@ -68,8 +62,8 @@ class CommentClassifier:
         """Initialize classifier.
         
         Args:
-            api_key: GitHub Copilot SDK API key (optional).
-            model: LLM model to use (default: claude-sonnet-4.5).
+            api_key: GitHub Copilot SDK API key.
+            model: claude-sonnet-4.5.
         """
         self._client = None
         self._model = model
