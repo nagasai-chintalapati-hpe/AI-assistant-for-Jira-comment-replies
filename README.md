@@ -6,7 +6,7 @@ An AI assistant that generates context-aware draft replies to developer comments
 
 ---
 
-## MVP v1 — Feature Roadmap
+## MVP v1 
 
 ### Phase 1: Architecture & Scaffolding
 - [x] Project structure, config, `.env` template
