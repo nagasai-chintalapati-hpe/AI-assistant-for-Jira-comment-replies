@@ -42,9 +42,7 @@ class JiraClient:
             password=self.api_token,
         )
 
-    # ------------------------------------------------------------------ #
-    #  Read helpers                                                       #
-    # ------------------------------------------------------------------ #
+    # Read helpers
 
     def get_issue(self, issue_key: str) -> dict[str, Any]:
         """Get full issue JSON including all standard and custom fields."""
@@ -195,9 +193,7 @@ class JiraClient:
         pattern = r"https?://[^\s\"'>]+/job/[^\s\"'>]+(?:console|consoleFull|consoleText)[^\s\"'>]*"
         return re.findall(pattern, text)
 
-    # ------------------------------------------------------------------ #
-    #  Write helpers                                                      #
-    # ------------------------------------------------------------------ #
+    # Write helpers
 
     def add_comment(
         self, issue_key: str, comment_body: str, is_internal: bool = False
