@@ -10,22 +10,22 @@ An AI assistant that generates context-aware draft replies to developer comments
 
 ### Phase 1: Architecture & Scaffolding
 - [x] Project structure, config, `.env` template
-- [x] Core data models — Comment, Classification, Context, Draft, Webhook
+- [x] Main models — Comment, Classification, Context, Draft, Webhook
 - [x] Jira integration — full REST API client (`JiraClient`)
 - [x] Webhook receiver — `POST /webhook/jira` accepts Jira comment events
 - [x] Event filtering — gates on issue type (Bug/Defect), status, trigger keywords, idempotency
 - [x] Tests — Jira client & webhook filter
 
 ### Phase 2: Comment Classification
-- [x] Comment classification — 4 buckets via keyword heuristics + optional Copilot SDK
+- [x] Comment classification — 4 buckets via keywords and Copilot SDK
 - [x] Tests — classifier unit tests
 
 ### Phase 3: Context Collection & Draft Generation
 - [x] Context retrieval — Jira issue fields, last N comments, attachments, linked issues, changelog
 - [x] Jenkins link detection — extracts console-log URLs from descriptions & comments
-- [x] Draft generation — template-per-bucket with context substitution + optional Copilot SDK polish
+- [x] Draft generation — template-per-bucket with context and Copilot SDK cleanup
 - [x] Evidence & citations — attachments and Jenkins logs tracked per draft
-- [x] Suggested labels & actions — auto-suggested per classification type
+- [x] Suggested labels and actions — auto-suggested per classification type
 - [x] Tests — context collector & drafter unit tests
 
 ### Phase 4: Full Pipeline & Approval Workflow
@@ -35,11 +35,11 @@ An AI assistant that generates context-aware draft replies to developer comments
 - [x] Tests — end-to-end pipeline tests via FastAPI TestClient
 
 ### Phase 5: Notifications
-- [x] Notifications — optional Teams webhook cards + Email (SMTP) on draft generated / approved / rejected
-- [x] NotificationService facade — fan-out to enabled channels
+- [x] Notifications — Teams webhook cards + Email SMTP on draft generated, approved or rejected
+- [x] NotificationService facade — fan-out to channels
 - [x] Wired into pipeline, approve, and reject endpoints
-- [x] Tests — notification unit tests (Teams, Email, service facade)
-- [x] **Final:** 89 unit + integration tests, 78% code coverage ✅
+- [x] Tests — notification unit tests Teams, Email, service facade
+- [x] **Final:** 89 unit + integration tests, 78% code coverage 
 
 ## Architecture
 
