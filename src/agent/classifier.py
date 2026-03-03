@@ -23,7 +23,7 @@ from src.models.classification import CommentClassification, CommentType
 
 logger = logging.getLogger(__name__)
 
-# keyword rules (fallback) 
+# ---- keyword rules (fallback) ----------------------------------------- #
 
 _KEYWORD_RULES: list[tuple[list[str], CommentType, str, list[str]]] = [
     # (keywords, type, reasoning, missing_context)
@@ -60,7 +60,7 @@ _KEYWORD_RULES: list[tuple[list[str], CommentType, str, list[str]]] = [
     ),
 ]
 
-# Copilot SDK classification prompt
+# ---- Copilot SDK classification prompt --------------------------------- #
 
 _COPILOT_SYSTEM_PROMPT = """\
 You are a Jira comment classifier for a QA team. Given a developer comment on a
@@ -103,7 +103,9 @@ class CommentClassifier:
             except Exception as exc:
                 logger.warning("Could not initialise Copilot SDK (%s) – using keyword fallback", exc)
 
-    # Public API
+    # ------------------------------------------------------------------ #
+    #  Public API                                                         #
+    # ------------------------------------------------------------------ #
 
     def classify(self, comment: Comment) -> CommentClassification:
         """Classify *comment* using Copilot SDK → keyword fallback chain."""
@@ -121,7 +123,9 @@ class CommentClassifier:
         # 2. Keyword fallback
         return self._classify_with_keywords(comment)
 
-    # Copilot SDK path
+    # ------------------------------------------------------------------ #
+    #  Copilot SDK path                                                   #
+    # ------------------------------------------------------------------ #
 
     def _classify_with_copilot(self, comment: Comment) -> Optional[CommentClassification]:
         """Call Copilot SDK and parse structured output."""
@@ -157,7 +161,9 @@ class CommentClassifier:
             logger.warning("Copilot SDK classification failed: %s", exc)
             return None
 
-    # Keyword path
+    # ------------------------------------------------------------------ #
+    #  Keyword path                                                       #
+    # ------------------------------------------------------------------ #
 
     def _classify_with_keywords(self, comment: Comment) -> CommentClassification:
         """Rule-based classification via keyword matching."""
@@ -182,7 +188,9 @@ class CommentClassifier:
             reasoning="Comment type could not be determined with high confidence",
         )
 
-    # Helpers
+    # ------------------------------------------------------------------ #
+    #  Helpers                                                            #
+    # ------------------------------------------------------------------ #
 
     @staticmethod
     def _default_questions(ctype: CommentType) -> Optional[list[str]]:

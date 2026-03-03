@@ -33,7 +33,9 @@ class ContextCollector:
     def __init__(self, jira_client: Optional[JiraClient] = None):
         self.jira_client = jira_client or JiraClient()
 
-    # Public API
+    # ------------------------------------------------------------------ #
+    #  Public API                                                         #
+    # ------------------------------------------------------------------ #
 
     def collect(
         self,
@@ -120,7 +122,9 @@ class ContextCollector:
             logger.error("Error collecting context for %s: %s", issue_key, e)
             raise
 
-    # Private helpers
+    # ------------------------------------------------------------------ #
+    #  Private helpers                                                    #
+    # ------------------------------------------------------------------ #
 
     @staticmethod
     def _extract_versions(fields: dict) -> list[str]:
