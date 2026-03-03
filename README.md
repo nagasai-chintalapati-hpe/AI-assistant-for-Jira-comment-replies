@@ -37,7 +37,7 @@ An AI assistant that generates context-aware draft replies to developer comments
 ### 🔲 Phase 5: Notifications (`phase/step-5`)
 - [ ] Notifications — optional Teams webhook cards + Email (SMTP) on draft generated / approved / rejected
 - [ ] Tests — notification unit tests
-- [ ] **Final:** 89 unit + integration tests, 78% code coverage
+- [ ] **Current:** 98 tests passed, 93% code coverage (notifications pending)
 
 ## Architecture
 
@@ -87,7 +87,9 @@ Notifications      ──▶  Teams Webhook (card)  │  Email (SMTP)
 │   │   └── event_filter.py       # Webhook event gate rules
 │   ├── integrations/
 │   │   ├── jira.py               # Jira Cloud REST API client
-│   │   └── notifications.py      # Teams webhook + Email (SMTP) notifier
+│   │   └── __init__.py
+│   ├── storage/
+│   │   └── sqlite_store.py       # Persistent drafts + event idempotency
 │   └── models/
 │       ├── classification.py     # CommentType enum + classification model
 │       ├── comment.py            # Comment data model
@@ -135,6 +137,76 @@ uvicorn src.api.app:app --reload --port 8000
 
 # 6. Health check
 curl http://localhost:8000/health
+```
+
+## Security & Production Settings
+
+The API now supports webhook authenticity verification and approval endpoint protection.
+
+Notifications are planned for Phase 5 and are not yet implemented in `src/integrations`.
+
+### Required in production
+
+- `WEBHOOK_SECRET` — shared HMAC secret used to validate incoming webhook signatures
+- `APPROVAL_API_KEY` — shared token required on `/approve` and `/reject`
+- `ASSISTANT_DB_PATH` — SQLite path for persistent drafts and processed-event idempotency
+
+### Webhook signature header
+
+When `WEBHOOK_SECRET` is set, send one of:
+
+- `X-Hub-Signature-256: sha256=<hex-digest>`
+- `X-Webhook-Signature: <hex-digest>`
+
+Digest is `HMAC_SHA256(secret, raw_request_body)`.
+
+### Approval auth header
+
+When `APPROVAL_API_KEY` is set, include:
+
+- `X-Approval-Token: <APPROVAL_API_KEY>`
+
+### Example: signed webhook request
+
+```bash
+payload='{"webhookEvent":"comment_created","timestamp":1700000001,"issue":{"id":"1","key":"DEFECT-500","fields":{"summary":"Test issue","issuetype":{"name":"Bug"},"status":{"name":"Open"}}},"comment":{"id":"99001","body":"Cannot reproduce this on my machine.","author":{"accountId":"u1","displayName":"Dev User","emailAddress":"dev@company.com"},"created":"2025-02-23T10:30:00.000+0000","updated":"2025-02-23T10:30:00.000+0000"}}'
+sig=$(printf '%s' "$payload" | openssl dgst -sha256 -hmac "$WEBHOOK_SECRET" -hex | sed 's/^.* //')
+curl -X POST http://localhost:8000/webhook/jira \
+    -H 'Content-Type: application/json' \
+    -H "X-Hub-Signature-256: sha256=$sig" \
+    -d "$payload"
+```
+
+### Example: approve with token
+
+```bash
+curl -X POST http://localhost:8000/approve \
+    -H 'Content-Type: application/json' \
+    -H "X-Approval-Token: $APPROVAL_API_KEY" \
+    -d '{"draft_id":"draft_1700000000","approved_by":"qa@company.com"}'
+```
+
+### Approve response fields
+
+`POST /approve` now returns posting metadata so integrators can distinguish
+approval-only from successfully-posted outcomes.
+
+- `status` — approval API result (`approved`)
+- `draft_id` — draft identifier
+- `posted_to_jira` — `true` when comment was posted to Jira, `false` otherwise
+- `jira_comment_id` — Jira comment id when posting succeeds, else `null`
+- `post_reason` — failure/skip reason when not posted, else `null`
+
+Example response:
+
+```json
+{
+    "status": "approved",
+    "draft_id": "draft_1700000000",
+    "posted_to_jira": true,
+    "jira_comment_id": "123456",
+    "post_reason": null
+}
 ```
 
 ## Documentation

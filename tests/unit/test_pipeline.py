@@ -1,6 +1,9 @@
 """Integration-style tests for the full webhook → draft pipeline via FastAPI TestClient."""
 
 import pytest
+import json
+import hmac
+import hashlib
 from fastapi.testclient import TestClient
 
 from src.api.app import app, event_filter, draft_store
@@ -120,6 +123,33 @@ class TestWebhookEndpoint:
         data = resp.json()
         assert data["classification"] == "fixed_validate"
 
+    def test_webhook_signature_required_when_secret_is_set(self, monkeypatch):
+        import src.api.app as app_module
+
+        monkeypatch.setattr(app_module, "_WEBHOOK_SECRET", "topsecret")
+        resp = client.post("/webhook/jira", json=_webhook_payload())
+        assert resp.status_code == 401
+
+    def test_webhook_signature_accepts_valid_hmac(self, monkeypatch):
+        import src.api.app as app_module
+
+        secret = "topsecret"
+        payload = _webhook_payload(timestamp=1700000010, comment_id="sig-1")
+        body = json.dumps(payload).encode("utf-8")
+        digest = hmac.new(secret.encode("utf-8"), body, hashlib.sha256).hexdigest()
+
+        monkeypatch.setattr(app_module, "_WEBHOOK_SECRET", secret)
+        resp = client.post(
+            "/webhook/jira",
+            content=body,
+            headers={
+                "Content-Type": "application/json",
+                "X-Hub-Signature-256": f"sha256={digest}",
+            },
+        )
+        assert resp.status_code == 200
+        assert resp.json()["status"] == "processed"
+
 
 # ---- draft store ------------------------------------------------------- #
 
@@ -168,7 +198,39 @@ class TestApproval:
         )
         assert approve_resp.status_code == 200
         assert approve_resp.json()["status"] == "approved"
+        assert approve_resp.json()["posted_to_jira"] is False
         assert draft_store[draft_id]["status"] == "approved"
+
+    def test_approve_posts_to_jira_when_configured(self, monkeypatch):
+        import src.api.app as app_module
+        import src.integrations.jira as jira_module
+
+        class FakeJiraClient:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            def add_comment(self, issue_key, comment_body, is_internal=False):
+                return "comment-123"
+
+        monkeypatch.setattr(app_module, "_WEBHOOK_SECRET", None)
+        monkeypatch.setattr(app_module, "_APPROVAL_API_KEY", None)
+        monkeypatch.setenv("JIRA_BASE_URL", "https://jira.example.com")
+        monkeypatch.setenv("JIRA_USERNAME", "dev@company.com")
+        monkeypatch.setenv("JIRA_API_TOKEN", "token")
+        monkeypatch.setattr(jira_module, "JiraClient", FakeJiraClient)
+
+        draft_resp = client.post("/webhook/jira", json=_webhook_payload(comment_id="post-1", timestamp=1700000031))
+        draft_id = draft_resp.json()["draft_id"]
+
+        approve_resp = client.post(
+            "/approve",
+            json={"draft_id": draft_id, "approved_by": "qa@company.com"},
+        )
+
+        assert approve_resp.status_code == 200
+        assert approve_resp.json()["posted_to_jira"] is True
+        assert approve_resp.json()["jira_comment_id"] == "comment-123"
+        assert draft_store[draft_id]["status"] == "posted"
 
     def test_approve_nonexistent_draft(self):
         resp = client.post(
@@ -195,3 +257,32 @@ class TestApproval:
             json={"draft_id": "nope", "feedback": ""},
         )
         assert resp.status_code == 404
+
+    def test_approve_requires_token_when_configured(self, monkeypatch):
+        import src.api.app as app_module
+
+        monkeypatch.setattr(app_module, "_WEBHOOK_SECRET", None)
+        monkeypatch.setattr(app_module, "_APPROVAL_API_KEY", "approve-secret")
+
+        draft_resp = client.post("/webhook/jira", json=_webhook_payload(comment_id="auth-1", timestamp=1700000020))
+        draft_id = draft_resp.json()["draft_id"]
+
+        resp = client.post("/approve", json={"draft_id": draft_id, "approved_by": "qa@company.com"})
+        assert resp.status_code == 401
+
+    def test_approve_accepts_valid_token(self, monkeypatch):
+        import src.api.app as app_module
+
+        monkeypatch.setattr(app_module, "_WEBHOOK_SECRET", None)
+        monkeypatch.setattr(app_module, "_APPROVAL_API_KEY", "approve-secret")
+
+        draft_resp = client.post("/webhook/jira", json=_webhook_payload(comment_id="auth-2", timestamp=1700000021))
+        draft_id = draft_resp.json()["draft_id"]
+
+        resp = client.post(
+            "/approve",
+            json={"draft_id": draft_id, "approved_by": "qa@company.com"},
+            headers={"X-Approval-Token": "approve-secret"},
+        )
+        assert resp.status_code == 200
+        assert resp.json()["status"] == "approved"

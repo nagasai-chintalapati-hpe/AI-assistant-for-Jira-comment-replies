@@ -153,3 +153,79 @@ class TestDetectJenkinsLinks:
         jira_client.client.issue_get.return_value = no_jenkins
         urls = jira_client.detect_jenkins_links("DEFECT-123")
         assert urls == []
+
+
+class TestJiraClientErrorPaths:
+    def test_get_comments_returns_empty_on_error(self, jira_client):
+        jira_client.client.issue_get.side_effect = RuntimeError("api down")
+        comments = jira_client.get_comments("DEFECT-123")
+        assert comments == []
+
+    def test_get_attachments_returns_empty_on_error(self, jira_client):
+        jira_client.client.issue_get.side_effect = RuntimeError("api down")
+        attachments = jira_client.get_attachments("DEFECT-123")
+        assert attachments == []
+
+    def test_get_linked_issues_returns_empty_on_error(self, jira_client):
+        jira_client.client.issue_get.side_effect = RuntimeError("api down")
+        linked = jira_client.get_linked_issues("DEFECT-123")
+        assert linked == []
+
+    def test_get_changelog_returns_empty_on_error(self, jira_client):
+        jira_client.client.issue_get.side_effect = RuntimeError("api down")
+        changelog = jira_client.get_changelog("DEFECT-123")
+        assert changelog == []
+
+    def test_detect_jenkins_links_returns_empty_on_error(self, jira_client):
+        jira_client.client.issue_get.side_effect = RuntimeError("api down")
+        urls = jira_client.detect_jenkins_links("DEFECT-123")
+        assert urls == []
+
+
+class TestWriteHelpers:
+    def test_add_comment_success_returns_id(self, jira_client):
+        jira_client.client.issue_add_comment.return_value = {"id": "c99"}
+        comment_id = jira_client.add_comment("DEFECT-123", "Hello")
+        assert comment_id == "c99"
+
+    def test_add_comment_raises_on_error(self, jira_client):
+        jira_client.client.issue_add_comment.side_effect = RuntimeError("nope")
+        with pytest.raises(RuntimeError):
+            jira_client.add_comment("DEFECT-123", "Hello")
+
+    def test_update_custom_field_success(self, jira_client):
+        assert jira_client.update_custom_field("DEFECT-123", "customfield_1", "value") is True
+
+    def test_update_custom_field_returns_false_on_error(self, jira_client):
+        jira_client.client.issue_update.side_effect = RuntimeError("nope")
+        assert jira_client.update_custom_field("DEFECT-123", "customfield_1", "value") is False
+
+    def test_add_label_does_not_update_if_present(self, jira_client):
+        issue = jira_client.client.issue_get.return_value
+        issue["fields"]["labels"] = ["regression"]
+
+        ok = jira_client.add_label("DEFECT-123", "regression")
+
+        assert ok is True
+        jira_client.client.issue_update.assert_not_called()
+
+    def test_add_label_updates_when_missing(self, jira_client):
+        issue = jira_client.client.issue_get.return_value
+        issue["fields"]["labels"] = ["existing"]
+
+        ok = jira_client.add_label("DEFECT-123", "new-label")
+
+        assert ok is True
+        jira_client.client.issue_update.assert_called_once()
+
+    def test_add_label_returns_false_on_error(self, jira_client):
+        jira_client.client.issue_get.side_effect = RuntimeError("nope")
+        assert jira_client.add_label("DEFECT-123", "x") is False
+
+    def test_transition_issue_success(self, jira_client):
+        assert jira_client.transition_issue("DEFECT-123", "31") is True
+        jira_client.client.issue_transition.assert_called_once_with("DEFECT-123", "31")
+
+    def test_transition_issue_returns_false_on_error(self, jira_client):
+        jira_client.client.issue_transition.side_effect = RuntimeError("nope")
+        assert jira_client.transition_issue("DEFECT-123", "31") is False

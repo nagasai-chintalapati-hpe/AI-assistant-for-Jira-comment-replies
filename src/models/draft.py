@@ -11,6 +11,7 @@ class DraftStatus(str, Enum):
 
     GENERATED = "generated"
     APPROVED = "approved"
+    POSTED = "posted"
     REJECTED = "rejected"
 
 

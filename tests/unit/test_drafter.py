@@ -1,6 +1,7 @@
 """Tests for response drafter – template-based generation."""
 
 import pytest
+from unittest.mock import MagicMock
 from datetime import datetime, timezone
 from src.models.comment import Comment
 from src.models.classification import CommentClassification, CommentType
@@ -108,6 +109,55 @@ class TestSuggestedActions:
         classification = _make_classification(CommentType.NEED_MORE_INFO)
         draft = await drafter.draft(sample_comment, classification, sample_context)
         assert len(draft.suggested_actions) > 0
+
+
+class TestCopilotRefinementPaths:
+    @pytest.mark.asyncio
+    async def test_refinement_applied_when_available(self, sample_comment, sample_context):
+        drafter = ResponseDrafter()
+        drafter._client = MagicMock()
+
+        async def _refined(_text):
+            return "Refined response text"
+
+        drafter._refine_with_copilot = _refined
+
+        draft = await drafter.draft(
+            sample_comment,
+            _make_classification(CommentType.NEED_MORE_INFO),
+            sample_context,
+        )
+
+        assert draft.body == "Refined response text"
+
+    @pytest.mark.asyncio
+    async def test_refinement_failure_keeps_template_content(self, sample_comment, sample_context):
+        drafter = ResponseDrafter()
+        drafter._client = MagicMock()
+
+        async def _none(_text):
+            return None
+
+        drafter._refine_with_copilot = _none
+
+        draft = await drafter.draft(
+            sample_comment,
+            _make_classification(CommentType.BY_DESIGN),
+            sample_context,
+        )
+
+        assert "expected behavior" in draft.body.lower()
+
+    @pytest.mark.asyncio
+    async def test_refine_with_copilot_handles_client_error(self):
+        drafter = ResponseDrafter()
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.side_effect = RuntimeError("boom")
+        drafter._client = mock_client
+
+        refined = await drafter._refine_with_copilot("Hello")
+
+        assert refined is None
 
 
 class TestTemplatesExist:

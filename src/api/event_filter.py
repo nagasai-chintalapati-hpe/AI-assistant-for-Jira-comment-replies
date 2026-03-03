@@ -72,8 +72,9 @@ class EventFilter:
     process (swap with Redis / DB for production).
     """
 
-    def __init__(self) -> None:
+    def __init__(self, event_store: Optional[object] = None) -> None:
         self._seen_event_ids: set[str] = set()
+        self._event_store = event_store
 
     # ------------------------------------------------------------------ #
     #  Public API                                                         #
@@ -91,7 +92,7 @@ class EventFilter:
 
         # 2. Idempotency
         eid = event.event_id
-        if eid in self._seen_event_ids:
+        if self._has_seen_event(eid):
             return FilterResult(
                 accepted=False,
                 reason=f"Duplicate event (already processed): {eid}",
@@ -131,7 +132,7 @@ class EventFilter:
             )
 
         # All gates passed – mark as seen
-        self._seen_event_ids.add(eid)
+        self._mark_event_seen(eid)
         logger.info("Event %s accepted for processing", eid)
         return FilterResult(accepted=True, reason="accepted", event_id=eid)
 
@@ -155,3 +156,17 @@ class EventFilter:
     def reset(self) -> None:
         """Clear the idempotency set (useful in tests)."""
         self._seen_event_ids.clear()
+        if self._event_store and hasattr(self._event_store, "clear_processed_events"):
+            self._event_store.clear_processed_events()
+
+    def _has_seen_event(self, event_id: str) -> bool:
+        if event_id in self._seen_event_ids:
+            return True
+        if self._event_store and hasattr(self._event_store, "is_event_processed"):
+            return bool(self._event_store.is_event_processed(event_id))
+        return False
+
+    def _mark_event_seen(self, event_id: str) -> None:
+        self._seen_event_ids.add(event_id)
+        if self._event_store and hasattr(self._event_store, "mark_event_processed"):
+            self._event_store.mark_event_processed(event_id)

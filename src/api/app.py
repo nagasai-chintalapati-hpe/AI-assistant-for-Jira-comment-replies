@@ -10,6 +10,8 @@ from fastapi.responses import JSONResponse
 from pydantic import ValidationError
 import logging
 import os
+import hmac
+import hashlib
 from datetime import datetime, timezone
 from typing import Optional
 
@@ -19,12 +21,50 @@ from src.models.draft import DraftStatus
 from src.api.event_filter import EventFilter
 from src.agent.classifier import CommentClassifier
 from src.agent.drafter import ResponseDrafter
+from src.storage import SQLiteStore
 
 logger = logging.getLogger(__name__)
 
+_ENV = os.getenv("ENV", "development").lower()
+_WEBHOOK_SECRET: Optional[str] = os.getenv("WEBHOOK_SECRET")
+_APPROVAL_API_KEY: Optional[str] = os.getenv("APPROVAL_API_KEY")
+_DB_PATH = os.getenv("ASSISTANT_DB_PATH", ".data/assistant.db")
+_draft_backend = SQLiteStore(_DB_PATH)
+
+
+class PersistentDraftStore:
+    """Dict-like wrapper backed by SQLite for compatibility with existing tests."""
+
+    def __init__(self, backend: SQLiteStore):
+        self._backend = backend
+
+    def __setitem__(self, draft_id: str, value: dict) -> None:
+        self._backend.upsert_draft(value)
+
+    def __getitem__(self, draft_id: str) -> dict:
+        value = self._backend.get_draft(draft_id)
+        if value is None:
+            raise KeyError(draft_id)
+        return value
+
+    def __contains__(self, draft_id: str) -> bool:
+        return self._backend.get_draft(draft_id) is not None
+
+    def __len__(self) -> int:
+        return len(self._backend.list_drafts())
+
+    def get(self, draft_id: str) -> Optional[dict]:
+        return self._backend.get_draft(draft_id)
+
+    def values(self) -> list[dict]:
+        return self._backend.list_drafts()
+
+    def clear(self) -> None:
+        self._backend.clear_drafts()
+
 # ---- singletons ----------------------------------------------------- #
 
-event_filter = EventFilter()
+event_filter = EventFilter(event_store=_draft_backend)
 
 # Copilot SDK configuration (optional; uses keywords fallback if not provided)
 _COPILOT_API_KEY: Optional[str] = os.getenv("COPILOT_API_KEY")
@@ -33,13 +73,18 @@ _COPILOT_MODEL: str = os.getenv("COPILOT_MODEL", "claude-sonnet-4.5")
 classifier = CommentClassifier(api_key=_COPILOT_API_KEY, model=_COPILOT_MODEL)
 drafter = ResponseDrafter(api_key=_COPILOT_API_KEY, model=_COPILOT_MODEL)
 
-# In-memory draft store (MVP v1)
-draft_store: dict[str, dict] = {}
+# Persistent draft store
+draft_store = PersistentDraftStore(_draft_backend)
 
 
 @asynccontextmanager
 async def lifespan(app_instance: FastAPI):
     """Application lifespan — startup / shutdown."""
+    if _ENV == "production":
+        if not _WEBHOOK_SECRET:
+            raise RuntimeError("WEBHOOK_SECRET is required in production")
+        if not _APPROVAL_API_KEY:
+            raise RuntimeError("APPROVAL_API_KEY is required in production")
     logger.info("Starting Jira Comment Assistant API (v0.3.0)")
     yield
 
@@ -75,6 +120,9 @@ async def jira_webhook(request: Request):
     4. Classify → collect context → draft response → store.
     5. Return draft summary.
     """
+    body = await request.body()
+    _verify_webhook_signature(request, body)
+
     try:
         payload = await request.json()
     except Exception:
@@ -196,6 +244,66 @@ def _collect_context_safe(issue_key: str):
             collection_duration_ms=0.0,
         )
 
+
+def _verify_webhook_signature(request: Request, body: bytes) -> None:
+    """Validate webhook HMAC signature when WEBHOOK_SECRET is configured."""
+    if not _WEBHOOK_SECRET:
+        return
+
+    provided = request.headers.get("x-hub-signature-256") or request.headers.get(
+        "x-webhook-signature"
+    )
+    if not provided:
+        raise HTTPException(status_code=401, detail="Missing webhook signature")
+
+    digest = hmac.new(_WEBHOOK_SECRET.encode("utf-8"), body, hashlib.sha256).hexdigest()
+    expected = f"sha256={digest}"
+    is_valid = hmac.compare_digest(provided, expected) or hmac.compare_digest(provided, digest)
+    if not is_valid:
+        raise HTTPException(status_code=401, detail="Invalid webhook signature")
+
+
+def _verify_approval_auth(request: Request) -> None:
+    """Protect approve/reject endpoints with a shared token when configured."""
+    if not _APPROVAL_API_KEY:
+        return
+
+    provided = request.headers.get("x-approval-token")
+    if not provided:
+        raise HTTPException(status_code=401, detail="Missing approval token")
+    if not hmac.compare_digest(provided, _APPROVAL_API_KEY):
+        raise HTTPException(status_code=401, detail="Invalid approval token")
+
+
+def _post_approved_draft_to_jira(draft: dict) -> dict:
+    """Try posting approved draft to Jira and return outcome metadata."""
+    try:
+        from src.integrations.jira import JiraClient
+
+        issue_key = draft.get("issue_key")
+        body = draft.get("body", "")
+        if not issue_key or not body:
+            return {
+                "posted_to_jira": False,
+                "jira_comment_id": None,
+                "post_reason": "missing issue key or body",
+            }
+
+        client = JiraClient()
+        comment_id = client.add_comment(issue_key=issue_key, comment_body=body)
+        return {
+            "posted_to_jira": True,
+            "jira_comment_id": comment_id,
+            "post_reason": None,
+        }
+    except Exception as exc:
+        logger.warning("Jira post skipped/failed for draft %s: %s", draft.get("draft_id"), exc)
+        return {
+            "posted_to_jira": False,
+            "jira_comment_id": None,
+            "post_reason": str(exc),
+        }
+
 #  Draft retrieval   
 @app.get("/drafts/{draft_id}")
 async def get_draft(draft_id: str):
@@ -222,6 +330,7 @@ async def approve_draft(request: Request):
     On approval the draft is marked and (optionally) posted to Jira.
     """
     try:
+        _verify_approval_auth(request)
         payload = await request.json()
         draft_id = payload.get("draft_id")
         approved_by = payload.get("approved_by")
@@ -229,15 +338,27 @@ async def approve_draft(request: Request):
         if draft_id not in draft_store:
             raise HTTPException(status_code=404, detail="Draft not found")
 
-        draft_store[draft_id]["status"] = DraftStatus.APPROVED.value
-        draft_store[draft_id]["approved_by"] = approved_by
-        draft_store[draft_id]["approved_at"] = datetime.now(timezone.utc).isoformat()
+        draft = draft_store.get(draft_id)
+        assert draft is not None
+        draft["status"] = DraftStatus.APPROVED.value
+        draft["approved_by"] = approved_by
+        draft["approved_at"] = datetime.now(timezone.utc).isoformat()
+
+        post_result = _post_approved_draft_to_jira(draft)
+        if post_result["posted_to_jira"]:
+            draft["status"] = DraftStatus.POSTED.value
+            draft["posted_at"] = datetime.now(timezone.utc).isoformat()
+            draft["jira_comment_id"] = post_result["jira_comment_id"]
+
+        draft_store[draft_id] = draft
 
         logger.info("Draft %s approved by %s", draft_id, approved_by)
 
-        # TODO: Post comment to Jira via JiraClient.add_comment()
-
-        return {"status": "approved", "draft_id": draft_id}
+        return {
+            "status": "approved",
+            "draft_id": draft_id,
+            **post_result,
+        }
     except HTTPException:
         raise
     except Exception as e:
@@ -249,6 +370,7 @@ async def approve_draft(request: Request):
 async def reject_draft(request: Request):
     """Reject a draft response with optional feedback."""
     try:
+        _verify_approval_auth(request)
         payload = await request.json()
         draft_id = payload.get("draft_id")
         feedback = payload.get("feedback", "")
@@ -256,8 +378,11 @@ async def reject_draft(request: Request):
         if draft_id not in draft_store:
             raise HTTPException(status_code=404, detail="Draft not found")
 
-        draft_store[draft_id]["status"] = DraftStatus.REJECTED.value
-        draft_store[draft_id]["feedback"] = feedback
+        draft = draft_store.get(draft_id)
+        assert draft is not None
+        draft["status"] = DraftStatus.REJECTED.value
+        draft["feedback"] = feedback
+        draft_store[draft_id] = draft
 
         logger.info("Draft %s rejected. Feedback: %s", draft_id, feedback)
 

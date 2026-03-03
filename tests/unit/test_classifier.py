@@ -1,9 +1,10 @@
 """Tests for comment classifier – keyword fallback path."""
 
 import pytest
+from unittest.mock import MagicMock
 from datetime import datetime, timezone
 from src.models.comment import Comment
-from src.models.classification import CommentType
+from src.models.classification import CommentClassification, CommentType
 from src.agent.classifier import CommentClassifier
 
 
@@ -81,4 +82,58 @@ class TestKeywordClassification:
         )
         assert result.suggested_questions is not None
         assert len(result.suggested_questions) > 0
+
+
+class TestCopilotClassificationPaths:
+    @pytest.mark.asyncio
+    async def test_copilot_success_used(self):
+        classifier = CommentClassifier()
+        mock_client = MagicMock()
+        mock_response = MagicMock()
+        mock_response.choices = [
+            MagicMock(
+                message=MagicMock(
+                    content='{"comment_type":"by_design","confidence":0.91,"reasoning":"Expected behavior"}'
+                )
+            )
+        ]
+        mock_client.chat.completions.create.return_value = mock_response
+        classifier._client = mock_client
+
+        result = await classifier.classify(_make_comment("This is expected behavior."))
+
+        assert result.comment_type == CommentType.BY_DESIGN
+        assert result.confidence == pytest.approx(0.91)
+
+    @pytest.mark.asyncio
+    async def test_copilot_malformed_json_falls_back_to_keywords(self):
+        classifier = CommentClassifier()
+        mock_client = MagicMock()
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock(message=MagicMock(content="not json"))]
+        mock_client.chat.completions.create.return_value = mock_response
+        classifier._client = mock_client
+
+        result = await classifier.classify(_make_comment("Cannot reproduce on my machine."))
+
+        assert result.comment_type == CommentType.CANNOT_REPRODUCE
+
+    @pytest.mark.asyncio
+    async def test_low_confidence_copilot_result_falls_back(self):
+        classifier = CommentClassifier()
+
+        async def _low_confidence(_comment):
+            return CommentClassification(
+                comment_id="10000",
+                comment_type=CommentType.OTHER,
+                confidence=0.2,
+                reasoning="unsure",
+            )
+
+        classifier._classify_with_copilot = _low_confidence
+        classifier._client = MagicMock()
+
+        result = await classifier.classify(_make_comment("Need logs from staging"))
+
+        assert result.comment_type == CommentType.NEED_MORE_INFO
 
