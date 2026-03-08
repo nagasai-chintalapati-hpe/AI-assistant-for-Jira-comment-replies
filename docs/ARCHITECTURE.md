@@ -14,7 +14,9 @@
    └─▶ Keyword heuristic gate (trigger keywords in comment body)
 
 3. Classification
-   ├─▶ Copilot SDK structured classification (if API key configured)
+   ├─▶ LLM Provider Layer
+   │   ├─▶ Copilot SDK (default)
+   │   └─▶ llama.cpp / GGUF (optional local provider)
    └─▶ Keyword fallback (always available)
 
 4. Context Collection
@@ -28,7 +30,7 @@
 5. Draft Generation
    ├─▶ Template selection (by classification bucket)
    ├─▶ Template variable substitution (from context)
-   ├─▶ Optional Copilot SDK natural-language refinement
+   ├─▶ Optional LLM natural-language refinement (Copilot or local provider)
    ├─▶ Citation extraction
    └─▶ Suggested labels + actions
 
@@ -63,7 +65,10 @@
 - Returns `FilterResult(accepted, reason, event_id)`
 
 ### 3. Comment Classifier (`src/agent/classifier.py`)
-- Two-tier classification: Copilot SDK → keyword fallback
+- Three-tier classification path:
+   1) LLM Provider Layer (Copilot SDK by default; optional llama.cpp/GGUF local endpoint)
+   2) Structured parse + confidence threshold
+   3) Keyword fallback when unavailable/low confidence
 - 4 classification buckets + fallback (see README)
 - Returns `CommentClassification` with confidence score, reasoning, missing context, suggested questions
 
@@ -76,8 +81,24 @@
 ### 5. Response Drafter (`src/agent/drafter.py`)
 - One template per classification bucket
 - Safe `format_map` substitution with context-derived values
-- Optional Copilot SDK refinement for natural language polish
+- Optional LLM refinement for natural language polish (Copilot or local)
 - Generates citations, suggested labels, and suggested actions
+
+### 5.1 LLM Provider Layer (recommended extension)
+- Purpose: keep orchestration stable while swapping model backends.
+- Suggested interface:
+   - `generate_json(prompt, schema_hint)` for classifier
+   - `generate_text(prompt)` for drafter refinement
+- Provider options:
+   - **Copilot SDK provider** (existing)
+   - **Local llama.cpp/GGUF provider** (new): invoke local server endpoint for on-prem or low-cost setups
+- Fallback policy:
+   - if provider fails or confidence is low, continue with keyword/template-only flow
+
+### 5.2 Tech note — llama.cpp / GGUF
+- Best fit when you need local/offline inference or tighter data residency.
+- Keep it optional behind provider configuration, not mandatory for baseline flow.
+- Start with classification/refinement only; keep retrieval/evidence logic unchanged.
 
 ### 6. Jira Client (`src/integrations/jira.py`)
 - Wraps `atlassian-python-api` for Jira Cloud REST API

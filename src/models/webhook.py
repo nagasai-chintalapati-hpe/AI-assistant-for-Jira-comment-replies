@@ -1,12 +1,13 @@
 """Webhook event models for Jira incoming payloads"""
 
-from datetime import datetime
-from typing import Optional, Any
-from pydantic import BaseModel, Field
+from typing import Any, Optional
+
+from pydantic import BaseModel
 
 
 class WebhookUser(BaseModel):
     """Jira user from webhook payload"""
+
     accountId: Optional[str] = None
     displayName: Optional[str] = None
     emailAddress: Optional[str] = None
@@ -15,6 +16,7 @@ class WebhookUser(BaseModel):
 
 class WebhookComment(BaseModel):
     """Comment section of a Jira webhook event"""
+
     id: str
     body: str
     author: WebhookUser
@@ -24,6 +26,7 @@ class WebhookComment(BaseModel):
 
 class WebhookIssueFields(BaseModel):
     """Subset of issue fields from webhook payload"""
+
     summary: Optional[str] = None
     issuetype: Optional[dict[str, Any]] = None
     status: Optional[dict[str, Any]] = None
@@ -34,6 +37,7 @@ class WebhookIssueFields(BaseModel):
 
 class WebhookIssue(BaseModel):
     """Issue section of a Jira webhook event"""
+
     id: str
     key: str
     fields: WebhookIssueFields
@@ -46,12 +50,13 @@ class JiraWebhookEvent(BaseModel):
     Jira sends different shapes depending on the event type.
     We normalise the pieces we care about for MVP v1.
     """
+
     webhookEvent: str
     timestamp: Optional[int] = None
     issue: Optional[WebhookIssue] = None
     comment: Optional[WebhookComment] = None
 
-    # ---- derived helpers ------------------------------------------------- #
+    # Derived helpers
 
     @property
     def event_id(self) -> str:

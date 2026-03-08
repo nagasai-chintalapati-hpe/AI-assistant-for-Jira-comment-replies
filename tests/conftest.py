@@ -1,7 +1,9 @@
 """Pytest configuration and fixtures."""
 
-import pytest
 from datetime import datetime, timezone
+
+import pytest
+
 from src.models.comment import Comment
 
 
@@ -22,4 +24,3 @@ def sample_comment():
 def sample_issue_key():
     """Sample issue key for testing."""
     return "DEFECT-123"
-

@@ -24,8 +24,8 @@ source .venv/bin/activate
 ### 3. Install dependencies
 
 ```bash
-pip install -e .           # Production deps
-pip install -e ".[dev]"    # + dev tools (black, ruff, mypy, pytest-asyncio)
+pip install -e .           
+pip install -e ".[dev]"   
 ```
 
 ### 4. Configure environment

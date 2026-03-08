@@ -6,7 +6,6 @@ import logging
 import os
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
 
 from dotenv import load_dotenv
 
@@ -21,13 +20,14 @@ if _ENV_FILE.exists():
 
 class ConfigurationError(Exception):
     """Raised when configuration validation fails."""
+
     pass
 
 
 @dataclass(frozen=True)
 class JiraConfig:
     """Jira Cloud configuration."""
-    
+
     base_url: str
     username: str
     api_token: str
@@ -47,7 +47,7 @@ class JiraConfig:
 @dataclass(frozen=True)
 class CopilotConfig:
     """GitHub Copilot SDK configuration."""
-    
+
     api_key: str
     model: str
     temperature: float = 0.1
@@ -64,7 +64,7 @@ class CopilotConfig:
 @dataclass(frozen=True)
 class NotificationConfig:
     """Notification channels configuration."""
-    
+
     teams_webhook_url: str = ""
     smtp_host: str = ""
     smtp_port: int = 587
@@ -86,7 +86,7 @@ class NotificationConfig:
 @dataclass(frozen=True)
 class AppConfig:
     """Application server configuration."""
-    
+
     host: str = "0.0.0.0"
     port: int = 8000
     log_level: str = "INFO"
@@ -96,7 +96,9 @@ class AppConfig:
         """Validate app configuration."""
         valid_levels = {"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"}
         if self.log_level.upper() not in valid_levels:
-            raise ConfigurationError(f"LOG_LEVEL must be one of {valid_levels}, got {self.log_level}")
+            raise ConfigurationError(
+                f"LOG_LEVEL must be one of {valid_levels}, got {self.log_level}"
+            )
         if self.port < 1 or self.port > 65535:
             raise ConfigurationError(f"APP_PORT must be 1-65535, got {self.port}")
         if self.max_comments < 1:
@@ -106,7 +108,7 @@ class AppConfig:
 @dataclass(frozen=True)
 class Settings:
     """All configuration combined."""
-    
+
     jira: JiraConfig
     copilot: CopilotConfig
     notifications: NotificationConfig
@@ -121,14 +123,14 @@ def _load_settings() -> Settings:
             username=os.getenv("JIRA_USERNAME", ""),
             api_token=os.getenv("JIRA_API_TOKEN", ""),
         )
-        
+
         copilot = CopilotConfig(
             api_key=os.getenv("COPILOT_API_KEY", ""),
             model=os.getenv("COPILOT_MODEL", "claude-sonnet-4.5"),
             temperature=float(os.getenv("COPILOT_TEMPERATURE", "0.1")),
             max_tokens=int(os.getenv("COPILOT_MAX_TOKENS", "1024")),
         )
-        
+
         notifications = NotificationConfig(
             teams_webhook_url=os.getenv("TEAMS_WEBHOOK_URL", ""),
             smtp_host=os.getenv("SMTP_HOST", ""),
@@ -138,22 +140,23 @@ def _load_settings() -> Settings:
             email_from=os.getenv("EMAIL_FROM", ""),
             email_to=os.getenv("EMAIL_TO", ""),
         )
-        
+
         app = AppConfig(
             host=os.getenv("APP_HOST", "0.0.0.0"),
             port=int(os.getenv("APP_PORT", "8000")),
             log_level=os.getenv("LOG_LEVEL", "INFO"),
             max_comments=int(os.getenv("MAX_COMMENTS", "10")),
         )
-        
+
         return Settings(jira=jira, copilot=copilot, notifications=notifications, app=app)
-    
+
     except ValueError as e:
         raise ConfigurationError(f"Invalid configuration value: {e}") from e
     except ConfigurationError:
         raise
     except Exception as e:
         raise ConfigurationError(f"Unexpected configuration error: {e}") from e
+
 
 try:
     settings = _load_settings()

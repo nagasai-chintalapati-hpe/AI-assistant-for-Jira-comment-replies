@@ -91,3 +91,11 @@ class TestLoadSettings:
 
         with pytest.raises(ConfigurationError):
             _load_settings()
+
+    def test_load_settings_config_error_propagates(self, monkeypatch):
+        """ConfigurationError from a sub-config propagates unchanged."""
+        monkeypatch.setenv("ENV", "development")
+        monkeypatch.setenv("COPILOT_TEMPERATURE", "1.5")  # out of range → ConfigurationError
+
+        with pytest.raises(ConfigurationError, match="COPILOT_TEMPERATURE"):
+            _load_settings()

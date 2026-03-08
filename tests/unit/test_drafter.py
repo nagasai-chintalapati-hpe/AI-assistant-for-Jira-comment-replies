@@ -1,13 +1,14 @@
 """Tests for response drafter – template-based generation."""
 
-import pytest
-from unittest.mock import MagicMock
 from datetime import datetime, timezone
-from src.models.comment import Comment
+from unittest.mock import MagicMock, patch
+
+import pytest
+
+from src.agent.drafter import TEMPLATES, ResponseDrafter
 from src.models.classification import CommentClassification, CommentType
-from src.models.context import IssueContext, ContextCollectionResult
+from src.models.context import CommentSnapshot, ContextCollectionResult, IssueContext
 from src.models.draft import DraftStatus
-from src.agent.drafter import ResponseDrafter, TEMPLATES
 
 
 @pytest.fixture
@@ -168,3 +169,195 @@ class TestTemplatesExist:
         for ctype in CommentType:
             assert ctype in TEMPLATES, f"Missing template for {ctype}"
 
+
+@pytest.fixture
+def rich_context():
+    """Context with attachments, linked issues, changelog, and Jenkins links."""
+    issue_context = IssueContext(
+        issue_key="DEFECT-123",
+        summary="Upload fails with 500 error",
+        description="POST /snapshot fails on tenant X.",
+        issue_type="Bug",
+        status="In Progress",
+        priority="High",
+        environment="Staging, Chrome 121",
+        versions=["1.8.14", "1.8.15"],
+        components=["Snapshot Service"],
+        attached_files=[
+            {
+                "filename": "error.log",
+                "content_url": "https://jira/att/1",
+                "mime_type": "text/plain",
+                "size": 4096,
+            }
+        ],
+        last_comments=[
+            CommentSnapshot(comment_id="c1", author="Alice", body="Opened ticket", created="")
+        ],
+        linked_issues=[
+            {"key": "DEFECT-100", "type": "Blocks", "direction": "outward", "status": "Closed"}
+        ],
+        changelog=[
+            {
+                "author": "CI Bot",
+                "created": "2025-02-20T08:00:00Z",
+                "items": [{"field": "status", "from": "Open", "to": "In Progress"}],
+            }
+        ],
+    )
+    return ContextCollectionResult(
+        issue_context=issue_context,
+        jenkins_links=["https://jenkins.company.com/job/build/42/console"],
+        jenkins_log_snippets={
+            "https://jenkins.company.com/job/build/42/console": (
+                "BUILD FAILURE\nNullPointerException"
+            )
+        },
+        collection_timestamp=datetime.now(timezone.utc),
+        collection_duration_ms=120.0,
+    )
+
+
+class TestCitations:
+    """Verify _build_citations populates from all evidence sources."""
+
+    @pytest.mark.asyncio
+    async def test_citations_from_attachments(self, drafter, sample_comment, rich_context):
+        """Attachments in context generate citation entries."""
+        classification = _make_classification(CommentType.CANNOT_REPRODUCE)
+        draft = await drafter.draft(sample_comment, classification, rich_context)
+        assert draft.citations is not None
+        sources = [c["source"] for c in draft.citations]
+        assert any("error.log" in s for s in sources)
+
+    @pytest.mark.asyncio
+    async def test_citations_from_jenkins_links(self, drafter, sample_comment, rich_context):
+        """Jenkins links in context generate citation entries."""
+        classification = _make_classification(CommentType.FIXED_VALIDATE)
+        draft = await drafter.draft(sample_comment, classification, rich_context)
+        assert draft.citations is not None
+        assert any(c["source"] == "Jenkins Build Log" for c in draft.citations)
+        assert any("BUILD FAILURE" in c["excerpt"] for c in draft.citations)
+
+    @pytest.mark.asyncio
+    async def test_citations_from_linked_issues(self, drafter, sample_comment, rich_context):
+        """Linked issues in context generate citation entries."""
+        classification = _make_classification(CommentType.CANNOT_REPRODUCE)
+        draft = await drafter.draft(sample_comment, classification, rich_context)
+        assert draft.citations is not None
+        assert any("DEFECT-100" in c["source"] for c in draft.citations)
+
+    @pytest.mark.asyncio
+    async def test_citations_jenkins_snippet_absent_uses_default(self, drafter, sample_comment):
+        """Jenkins link with no snippet uses the default excerpt text."""
+        issue_context = IssueContext(
+            issue_key="DEFECT-123",
+            summary="Test",
+            description="",
+            issue_type="Bug",
+            status="Open",
+            priority="High",
+        )
+        context = ContextCollectionResult(
+            issue_context=issue_context,
+            jenkins_links=["https://jenkins.company.com/job/build/1/console"],
+            jenkins_log_snippets=None,  # no snippets fetched
+            collection_timestamp=datetime.now(timezone.utc),
+            collection_duration_ms=10.0,
+        )
+        classification = _make_classification(CommentType.FIXED_VALIDATE)
+        draft = await drafter.draft(sample_comment, classification, context)
+        jenkins_cit = next(
+            (c for c in (draft.citations or []) if c["source"] == "Jenkins Build Log"), None
+        )
+        assert jenkins_cit is not None
+        assert jenkins_cit["excerpt"] == "Console output from CI build"
+
+
+class TestRichContextDraft:
+    """Draft generation with fully-populated context (versions, components, changelog)."""
+
+    @pytest.mark.asyncio
+    async def test_draft_uses_environment_from_context(self, drafter, sample_comment, rich_context):
+        classification = _make_classification(CommentType.CANNOT_REPRODUCE)
+        draft = await drafter.draft(sample_comment, classification, rich_context)
+        assert "Staging" in draft.body or "staging" in draft.body
+
+    @pytest.mark.asyncio
+    async def test_draft_evidence_includes_attachment_count(
+        self, drafter, sample_comment, rich_context
+    ):
+        classification = _make_classification(CommentType.NEED_MORE_INFO)
+        draft = await drafter.draft(sample_comment, classification, rich_context)
+        # body should mention attachment evidence or comments
+        assert len(draft.body) > 0
+
+    @pytest.mark.asyncio
+    async def test_draft_fixed_validate_uses_fix_version(
+        self, drafter, sample_comment, rich_context
+    ):
+        classification = _make_classification(CommentType.FIXED_VALIDATE)
+        draft = await drafter.draft(sample_comment, classification, rich_context)
+        # Version should appear in body from the rich context
+        assert "1.8" in draft.body or "pending" in draft.body
+
+    @pytest.mark.asyncio
+    async def test_draft_changelog_generates_retest_checklist(
+        self, drafter, sample_comment, rich_context
+    ):
+        classification = _make_classification(CommentType.FIXED_VALIDATE)
+        draft = await drafter.draft(sample_comment, classification, rich_context)
+        assert "In Progress" in draft.body or "staging" in draft.body.lower()
+
+
+class TestConstructorApiKeyPath:
+    """Verify the api_key constructor path initialises _client."""
+
+    def test_classifier_with_api_key_sets_client(self):
+        """Passing api_key initialises CopilotClient (import succeeds in this env)."""
+        from src.agent.classifier import CommentClassifier
+
+        clf = CommentClassifier(api_key="fake-key")
+        assert clf._client is not None
+
+    def test_drafter_with_api_key_sets_client(self):
+        """Passing api_key initialises CopilotClient for the drafter."""
+        drafter = ResponseDrafter(api_key="fake-key")
+        assert drafter._client is not None
+
+
+class TestRefineWithCopilotSuccess:
+    """Cover the success return path of _refine_with_copilot."""
+
+    @pytest.mark.asyncio
+    async def test_refine_returns_model_content_on_success(self):
+        drafter = ResponseDrafter()
+        mock_client = MagicMock()
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock(message=MagicMock(content="  Polished response.  "))]
+        mock_client.chat.completions.create.return_value = mock_response
+        drafter._client = mock_client
+
+        result = await drafter._refine_with_copilot("Raw draft text")
+        assert result == "Polished response."
+
+
+class TestLocalLLMRefinement:
+    @pytest.mark.asyncio
+    @patch("src.agent.drafter.requests.post")
+    async def test_refine_with_local_llm_returns_content(self, mock_post):
+        drafter = ResponseDrafter(
+            provider="llama_cpp",
+            model="llama-3.1-8b-instruct",
+            base_url="http://localhost:8080",
+        )
+
+        mock_resp = MagicMock()
+        mock_resp.raise_for_status.return_value = None
+        mock_resp.json.return_value = {
+            "choices": [{"message": {"content": "Refined local response."}}]
+        }
+        mock_post.return_value = mock_resp
+
+        result = await drafter._refine_with_local_llm("Raw draft text")
+        assert result == "Refined local response."

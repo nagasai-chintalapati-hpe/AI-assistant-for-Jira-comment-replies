@@ -1,35 +1,32 @@
-"""
-Webhook event filtering and validation.
-
-Applies the MVP v1 gate rules described in the architecture doc:
-  • Issue type must be Bug / Defect
-  • Issue status in an allowed set (In Progress, Ready for QA, Reopened, Open)
-  • Comment author should belong to the developer group OR trigger
-    heuristic keywords ("cannot repro", "fixed in", "need logs", etc.)
-  • Idempotency: duplicate event IDs are rejected
-"""
+"""Webhook event filtering and validation."""
 
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Optional
 
 from src.models.webhook import JiraWebhookEvent
 
 logger = logging.getLogger(__name__)
 
-# ---- configurable allow-lists ------------------------------------------ #
+# Configurable allow-lists
 
 ALLOWED_ISSUE_TYPES: set[str] = {"Bug", "Defect", "bug", "defect"}
 
 ALLOWED_STATUSES: set[str] = {
     "Open",
     "In Progress",
+    "In Test",
     "Ready for QA",
     "Reopened",
     "To Do",
     "In Review",
+    "New",
+    "Cannot Reproduce",
+    "Cannot_reproduce",
+    "Resolved",
+    "Closed",
 }
 
 HANDLED_EVENTS: set[str] = {"comment_created", "comment_updated", "jira:issue_updated"}
@@ -59,6 +56,7 @@ TRIGGER_KEYWORDS: list[str] = [
 @dataclass
 class FilterResult:
     """Outcome of running the event through the filter pipeline."""
+
     accepted: bool
     reason: str
     event_id: Optional[str] = None
@@ -76,9 +74,7 @@ class EventFilter:
         self._seen_event_ids: set[str] = set()
         self._event_store = event_store
 
-    # ------------------------------------------------------------------ #
-    #  Public API                                                         #
-    # ------------------------------------------------------------------ #
+    # Public API
 
     def evaluate(self, event: JiraWebhookEvent) -> FilterResult:
         """Run all filter rules against *event* and return a FilterResult."""
@@ -136,9 +132,7 @@ class EventFilter:
         logger.info("Event %s accepted for processing", eid)
         return FilterResult(accepted=True, reason="accepted", event_id=eid)
 
-    # ------------------------------------------------------------------ #
-    #  Private helpers                                                    #
-    # ------------------------------------------------------------------ #
+    # Private helpers
 
     @staticmethod
     def _comment_is_relevant(event: JiraWebhookEvent) -> bool:

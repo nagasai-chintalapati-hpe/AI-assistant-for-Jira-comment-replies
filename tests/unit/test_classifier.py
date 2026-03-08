@@ -1,11 +1,13 @@
 """Tests for comment classifier – keyword fallback path."""
 
-import pytest
-from unittest.mock import MagicMock
 from datetime import datetime, timezone
-from src.models.comment import Comment
-from src.models.classification import CommentClassification, CommentType
+from unittest.mock import MagicMock, patch
+
+import pytest
+
 from src.agent.classifier import CommentClassifier
+from src.models.classification import CommentClassification, CommentType
+from src.models.comment import Comment
 
 
 @pytest.fixture
@@ -52,17 +54,13 @@ class TestKeywordClassification:
     @pytest.mark.asyncio
     async def test_by_design(self, classifier):
         """Test BY_DESIGN classification."""
-        result = await classifier.classify(
-            _make_comment("This is by design per the spec.")
-        )
+        result = await classifier.classify(_make_comment("This is by design per the spec."))
         assert result.comment_type == CommentType.BY_DESIGN
 
     @pytest.mark.asyncio
     async def test_fixed_validate(self, classifier):
         """Test FIXED_VALIDATE classification."""
-        result = await classifier.classify(
-            _make_comment("Already fixed in build 2.3.1")
-        )
+        result = await classifier.classify(_make_comment("Already fixed in build 2.3.1"))
         assert result.comment_type == CommentType.FIXED_VALIDATE
 
     @pytest.mark.asyncio
@@ -77,9 +75,7 @@ class TestKeywordClassification:
     @pytest.mark.asyncio
     async def test_suggested_questions(self, classifier):
         """Test that suggested questions are provided."""
-        result = await classifier.classify(
-            _make_comment("Unable to reproduce this issue.")
-        )
+        result = await classifier.classify(_make_comment("Unable to reproduce this issue."))
         assert result.suggested_questions is not None
         assert len(result.suggested_questions) > 0
 
@@ -90,13 +86,10 @@ class TestCopilotClassificationPaths:
         classifier = CommentClassifier()
         mock_client = MagicMock()
         mock_response = MagicMock()
-        mock_response.choices = [
-            MagicMock(
-                message=MagicMock(
-                    content='{"comment_type":"by_design","confidence":0.91,"reasoning":"Expected behavior"}'
-                )
-            )
-        ]
+        llm_json = (
+            '{"comment_type":"by_design","confidence":0.91,' '"reasoning":"Expected behavior"}'
+        )
+        mock_response.choices = [MagicMock(message=MagicMock(content=llm_json))]
         mock_client.chat.completions.create.return_value = mock_response
         classifier._client = mock_client
 
@@ -137,3 +130,39 @@ class TestCopilotClassificationPaths:
 
         assert result.comment_type == CommentType.NEED_MORE_INFO
 
+
+class TestLocalLLMClassificationPaths:
+    @pytest.mark.asyncio
+    @patch("src.agent.classifier.requests.post")
+    async def test_local_llm_success_used(self, mock_post):
+        classifier = CommentClassifier(
+            provider="llama_cpp",
+            model="llama-3.1-8b-instruct",
+            base_url="http://localhost:8080",
+        )
+
+        mock_resp = MagicMock()
+        mock_resp.raise_for_status.return_value = None
+        llm_json = (
+            '{"comment_type":"by_design","confidence":0.9,' '"reasoning":"Expected behavior"}'
+        )
+        mock_resp.json.return_value = {"choices": [{"message": {"content": llm_json}}]}
+        mock_post.return_value = mock_resp
+
+        result = await classifier.classify(_make_comment("This is expected behavior."))
+
+        assert result.comment_type == CommentType.BY_DESIGN
+        assert result.confidence == pytest.approx(0.9)
+
+    @pytest.mark.asyncio
+    @patch("src.agent.classifier.requests.post")
+    async def test_local_llm_malformed_falls_back_to_keywords(self, mock_post):
+        classifier = CommentClassifier(provider="llama_cpp")
+
+        mock_resp = MagicMock()
+        mock_resp.raise_for_status.return_value = None
+        mock_resp.json.return_value = {"choices": [{"message": {"content": "not json"}}]}
+        mock_post.return_value = mock_resp
+
+        result = await classifier.classify(_make_comment("Cannot reproduce on my machine."))
+        assert result.comment_type == CommentType.CANNOT_REPRODUCE

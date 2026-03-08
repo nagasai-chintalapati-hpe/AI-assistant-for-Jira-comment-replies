@@ -23,24 +23,20 @@ class SQLiteStore:
 
     def _init_schema(self) -> None:
         with self._connect() as conn:
-            conn.execute(
-                """
+            conn.execute("""
                 CREATE TABLE IF NOT EXISTS drafts (
                     draft_id TEXT PRIMARY KEY,
                     issue_key TEXT NOT NULL,
                     payload_json TEXT NOT NULL,
                     updated_at TEXT NOT NULL
                 )
-                """
-            )
-            conn.execute(
-                """
+                """)
+            conn.execute("""
                 CREATE TABLE IF NOT EXISTS processed_events (
                     event_id TEXT PRIMARY KEY,
                     processed_at TEXT NOT NULL
                 )
-                """
-            )
+                """)
 
     # Draft APIs
     def upsert_draft(self, draft: dict) -> None:
