@@ -9,10 +9,7 @@ from src.integrations.notifications import (
     notify_draft_ready,
 )
 
-# ---------------------------------------------------------------------------
 # Shared sample draft
-# ---------------------------------------------------------------------------
-
 SAMPLE_DRAFT = {
     "draft_id": "draft_abc123",
     "issue_key": "DEFECT-404",
@@ -23,12 +20,7 @@ SAMPLE_DRAFT = {
     "status": "generated",
 }
 
-
-# ---------------------------------------------------------------------------
 # TeamsNotifier
-# ---------------------------------------------------------------------------
-
-
 class TestTeamsNotifier:
 
     def test_not_configured_returns_false(self):
@@ -154,13 +146,8 @@ class TestTeamsNotifier:
         notifier = TeamsNotifier()
         assert notifier.webhook_url == "https://env-teams-hook.example.com"
         assert notifier.is_configured is True
-
-
-# ---------------------------------------------------------------------------
+        
 # EmailNotifier
-# ---------------------------------------------------------------------------
-
-
 class TestEmailNotifier:
 
     def test_not_configured_returns_false(self):

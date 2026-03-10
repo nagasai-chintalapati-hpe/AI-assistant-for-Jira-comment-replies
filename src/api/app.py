@@ -17,6 +17,8 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
 from pydantic import ValidationError
 
+import src.config  # noqa: F401 — triggers dotenv loading
+
 from src.agent.classifier import CommentClassifier
 from src.agent.drafter import ResponseDrafter
 from src.api.event_filter import EventFilter
@@ -30,11 +32,14 @@ logger = logging.getLogger(__name__)
 
 # Configuration
 _ENV = os.getenv("ENV", "development").lower()
-_WEBHOOK_SECRET: Optional[str] = os.getenv("WEBHOOK_SECRET")
-_APPROVAL_API_KEY: Optional[str] = os.getenv("APPROVAL_API_KEY")
+_WEBHOOK_SECRET: Optional[str] = (os.getenv("WEBHOOK_SECRET") or "").strip() or None
+_APPROVAL_API_KEY: Optional[str] = os.getenv("APPROVAL_API_KEY") or None
 _DB_PATH = os.getenv("ASSISTANT_DB_PATH", ".data/assistant.db")
-_COPILOT_API_KEY: Optional[str] = os.getenv("COPILOT_API_KEY")
+_GITHUB_TOKEN: Optional[str] = os.getenv("GITHUB_TOKEN") or os.getenv("COPILOT_API_KEY") or None
 _COPILOT_MODEL: str = os.getenv("COPILOT_MODEL", "claude-sonnet-4.5")
+
+# Bot-loop protection: marker prepended to every comment the bot posts.
+BOT_COMMENT_MARKER = "\u200B\u200C\u200B\u200C\u200B"
 
 
 # Persistent draft store (dict-like wrapper over SQLite)
@@ -72,8 +77,8 @@ class PersistentDraftStore:
 # Singletons
 _draft_backend = SQLiteStore(_DB_PATH)
 event_filter = EventFilter(event_store=_draft_backend)
-classifier = CommentClassifier(api_key=_COPILOT_API_KEY, model=_COPILOT_MODEL)
-drafter = ResponseDrafter(api_key=_COPILOT_API_KEY, model=_COPILOT_MODEL)
+classifier = CommentClassifier(github_token=_GITHUB_TOKEN, model=_COPILOT_MODEL)
+drafter = ResponseDrafter(github_token=_GITHUB_TOKEN, model=_COPILOT_MODEL)
 draft_store = PersistentDraftStore(_draft_backend)
 
 
@@ -157,11 +162,11 @@ async def jira_webhook(request: Request):
     return await _handle_comment_event(event)
 
 
-# Pipeline orchestration
+# Pipeline 
 async def _handle_comment_event(event: JiraWebhookEvent) -> dict:
     """
     Full MVP v1 pipeline:
-    Comment → Classify → Context → Draft → Store → Notify
+    Trigger → Retrieve (context + Jenkins) → Classify → Draft → Store → Notify
     """
     assert event.comment is not None
     assert event.issue is not None
@@ -169,8 +174,18 @@ async def _handle_comment_event(event: JiraWebhookEvent) -> dict:
     # 1. Build Comment model
     comment = _build_comment(event)
 
-    # 2. Classify
-    classification = await classifier.classify(comment)
+    # 2. Retrieve: Jira issue + attachments + last comments + Jenkins console logs
+    loop = asyncio.get_running_loop()
+    context = await loop.run_in_executor(None, _collect_context_safe, comment.issue_key)
+    logger.info(
+        "Collected context for %s (jenkins_links=%d, attachments=%d)",
+        comment.issue_key,
+        len(context.jenkins_links or []),
+        len((context.issue_context.attached_files or []) if context.issue_context else []),
+    )
+
+    # 3. Classify (with full context for richer evidence-based classification)
+    classification = await classifier.classify(comment, context=context)
     logger.info(
         "Classified %s comment %s → %s (%.2f)",
         comment.issue_key,
@@ -179,11 +194,7 @@ async def _handle_comment_event(event: JiraWebhookEvent) -> dict:
         classification.confidence,
     )
 
-    # 3. Collect context (sync Jira calls run in a thread pool)
-    loop = asyncio.get_event_loop()
-    context = await loop.run_in_executor(None, _collect_context_safe, comment.issue_key)
-
-    # 4. Generate draft
+    # 4. Draft response + evidence list
     draft = await drafter.draft(comment, classification, context)
     logger.info("Generated draft %s for %s", draft.draft_id, comment.issue_key)
 
@@ -233,17 +244,34 @@ async def list_drafts(issue_key: Optional[str] = None):
 
 
 # Approval / rejection
+@app.post("/approve/{draft_id}")
+async def approve_draft_short(draft_id: str, request: Request):
+    """Approve a draft by path — POST /approve/draft_abc123."""
+    return await _do_approve(draft_id, request)
+
+
 @app.post("/approve")
 async def approve_draft(request: Request):
-    """Approve a draft and optionally post it to Jira."""
+    """Approve a draft (JSON body with draft_id)."""
+    payload = await request.json()
+    draft_id = payload.get("draft_id")
+    return await _do_approve(draft_id, request, approved_by=payload.get("approved_by"))
+
+
+async def _do_approve(draft_id: str, request: Request, approved_by: str | None = None):
+    """Shared approve logic."""
     try:
         _verify_approval_auth(request)
-        payload = await request.json()
-        draft_id = payload.get("draft_id")
-        approved_by = payload.get("approved_by")
 
-        if draft_id not in draft_store:
+        if not draft_id or draft_id not in draft_store:
             raise HTTPException(status_code=404, detail="Draft not found")
+
+        if approved_by is None:
+            try:
+                payload = await request.json()
+                approved_by = payload.get("approved_by")
+            except Exception:
+                approved_by = "api"
 
         draft = draft_store.get(draft_id)
         assert draft is not None
@@ -262,7 +290,7 @@ async def approve_draft(request: Request):
 
         # Notify on approval (best-effort)
         try:
-            loop = asyncio.get_event_loop()
+            loop = asyncio.get_running_loop()
             from src.integrations.notifications import notify_draft_event
 
             await loop.run_in_executor(
@@ -285,17 +313,34 @@ async def approve_draft(request: Request):
         raise HTTPException(status_code=500, detail="Failed to approve draft")
 
 
+@app.post("/reject/{draft_id}")
+async def reject_draft_short(draft_id: str, request: Request):
+    """Reject a draft by path — POST /reject/draft_abc123."""
+    return await _do_reject(draft_id, request)
+
+
 @app.post("/reject")
 async def reject_draft(request: Request):
-    """Reject a draft with optional feedback."""
+    """Reject a draft (JSON body with draft_id)."""
+    payload = await request.json()
+    draft_id = payload.get("draft_id")
+    return await _do_reject(draft_id, request, feedback=payload.get("feedback", ""))
+
+
+async def _do_reject(draft_id: str, request: Request, feedback: str = ""):
+    """Shared reject logic."""
     try:
         _verify_approval_auth(request)
-        payload = await request.json()
-        draft_id = payload.get("draft_id")
-        feedback = payload.get("feedback", "")
 
-        if draft_id not in draft_store:
+        if not draft_id or draft_id not in draft_store:
             raise HTTPException(status_code=404, detail="Draft not found")
+
+        if not feedback:
+            try:
+                payload = await request.json()
+                feedback = payload.get("feedback", "")
+            except Exception:
+                pass
 
         draft = draft_store.get(draft_id)
         assert draft is not None
@@ -307,7 +352,7 @@ async def reject_draft(request: Request):
 
         # Notify on rejection (best-effort)
         try:
-            loop = asyncio.get_event_loop()
+            loop = asyncio.get_running_loop()
             from src.integrations.notifications import notify_draft_event
 
             await loop.run_in_executor(
@@ -381,8 +426,10 @@ def _verify_webhook_signature(request: Request, body: bytes) -> None:
     if not _WEBHOOK_SECRET:
         return
 
-    provided = request.headers.get("x-hub-signature-256") or request.headers.get(
-        "x-webhook-signature"
+    provided = (
+        request.headers.get("x-hub-signature-256")
+        or request.headers.get("x-hub-signature")
+        or request.headers.get("x-webhook-signature")
     )
     if not provided:
         raise HTTPException(status_code=401, detail="Missing webhook signature")
@@ -420,7 +467,9 @@ def _post_approved_draft_to_jira(draft: dict) -> dict:
                 "post_reason": "missing issue key or body",
             }
 
-        comment_id = JiraClient().add_comment(issue_key=issue_key, comment_body=body)
+        # Append invisible bot marker so we can detect our own comments and avoid loops
+        tagged_body = f"{body}{BOT_COMMENT_MARKER}"
+        comment_id = JiraClient().add_comment(issue_key=issue_key, comment_body=tagged_body)
         return {
             "posted_to_jira": True,
             "jira_comment_id": comment_id,

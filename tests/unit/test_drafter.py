@@ -1,11 +1,11 @@
 """Tests for response drafter – template-based generation."""
 
 from datetime import datetime, timezone
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from src.agent.drafter import TEMPLATES, ResponseDrafter
+from src.agent.drafter import ResponseDrafter
 from src.models.classification import CommentClassification, CommentType
 from src.models.context import CommentSnapshot, ContextCollectionResult, IssueContext
 from src.models.draft import DraftStatus
@@ -153,7 +153,7 @@ class TestCopilotRefinementPaths:
     async def test_refine_with_copilot_handles_client_error(self):
         drafter = ResponseDrafter()
         mock_client = MagicMock()
-        mock_client.chat.completions.create.side_effect = RuntimeError("boom")
+        mock_client.create_session = AsyncMock(side_effect=RuntimeError("boom"))
         drafter._client = mock_client
 
         refined = await drafter._refine_with_copilot("Hello")
@@ -161,13 +161,17 @@ class TestCopilotRefinementPaths:
         assert refined is None
 
 
-class TestTemplatesExist:
-    """Verify all CommentTypes have templates."""
+class TestAllTypesProduceDraft:
+    """Verify every CommentType produces a non-empty draft."""
 
-    def test_all_types_have_templates(self):
-        """All classification types should have response templates."""
+    @pytest.mark.asyncio
+    async def test_all_types_generate_draft(self, drafter, sample_comment, sample_context):
+        """Every classification type should produce a non-empty draft body."""
         for ctype in CommentType:
-            assert ctype in TEMPLATES, f"Missing template for {ctype}"
+            classification = _make_classification(ctype)
+            draft = await drafter.draft(sample_comment, classification, sample_context)
+            assert draft.body, f"Empty draft body for {ctype}"
+            assert draft.draft_id.startswith("draft_"), f"Bad draft_id for {ctype}"
 
 
 @pytest.fixture
@@ -334,8 +338,10 @@ class TestRefineWithCopilotSuccess:
         drafter = ResponseDrafter()
         mock_client = MagicMock()
         mock_response = MagicMock()
-        mock_response.choices = [MagicMock(message=MagicMock(content="  Polished response.  "))]
-        mock_client.chat.completions.create.return_value = mock_response
+        mock_response.data.content = "  Polished response.  "
+        mock_session = AsyncMock()
+        mock_session.send_and_wait.return_value = mock_response
+        mock_client.create_session = AsyncMock(return_value=mock_session)
         drafter._client = mock_client
 
         result = await drafter._refine_with_copilot("Raw draft text")

@@ -24,6 +24,9 @@ _KEYWORD_RULES = [
             "cannot reproduce",
             "failed to reproduce",
             "unable to reproduce",
+            "not reproducible",
+            "works on my machine",
+            "works for me",
         ),
         CommentType.CANNOT_REPRODUCE,
         "Developer cannot reproduce the issue.",
@@ -87,12 +90,14 @@ class CommentClassifier:
         provider: Optional[str] = None,
         base_url: Optional[str] = None,
         llm_api_key: Optional[str] = None,
+        github_token: Optional[str] = None,
     ):
         """Initialize classifier.
 
         Args:
-            api_key: GitHub Copilot SDK API key.
-            model: claude-sonnet-4.5.
+            api_key: Deprecated – use github_token instead.
+            model: Model name for Copilot SDK sessions.
+            github_token: GitHub token for Copilot SDK auth.
         """
         self._client = None
         self._model = model
@@ -102,11 +107,12 @@ class CommentClassifier:
         )
         self._llm_api_key = llm_api_key or os.getenv("LLM_API_KEY", "")
 
-        if self._provider == "copilot" and api_key:
+        token = github_token or api_key
+        if self._provider == "copilot" and token:
             try:
                 from copilot import CopilotClient
 
-                self._client = CopilotClient()
+                self._client = CopilotClient({"github_token": token})
                 logger.info("Copilot SDK initialized (model=%s)", model)
             except ImportError:
                 logger.warning("copilot SDK not available; using keyword fallback")
@@ -117,49 +123,71 @@ class CommentClassifier:
                 self._base_url,
             )
 
-    async def classify(self, comment: Comment) -> CommentClassification:
+    async def classify(
+        self, comment: Comment, *, context=None,
+    ) -> CommentClassification:
         """Classify a comment into a predefined type.
 
         Args:
             comment: The comment to classify.
+            context: Optional ContextCollectionResult for richer classification.
 
         Returns:
             Classification with type and confidence score.
         """
+        # Build enriched body: comment + issue description + recent comments
+        enriched_body = comment.body
+        if context and context.issue_context:
+            issue = context.issue_context
+            parts = [comment.body]
+            if issue.description:
+                parts.append(issue.description)
+            if issue.last_comments:
+                for c in issue.last_comments[-3:]:
+                    if c.body:
+                        parts.append(c.body)
+            enriched_body = "\n---\n".join(parts)
+
+        enriched_comment = Comment(
+            comment_id=comment.comment_id,
+            issue_key=comment.issue_key,
+            author=comment.author,
+            created=comment.created,
+            updated=comment.updated,
+            body=enriched_body,
+        )
         if self._provider == "copilot" and self._client:
-            result = await self._classify_with_copilot(comment)
+            result = await self._classify_with_copilot(enriched_comment)
             if result and result.confidence >= 0.6:
                 return result
         elif self._provider in {"llama_cpp", "local", "openai_compat"}:
-            result = await self._classify_with_local_llm(comment)
+            result = await self._classify_with_local_llm(enriched_comment)
             if result and result.confidence >= 0.6:
                 return result
 
         return self._classify_with_keywords(comment)
 
     async def _classify_with_copilot(self, comment: Comment) -> Optional[CommentClassification]:
-        """Classify using Copilot SDK."""
+        """Classify using Copilot SDK session."""
+        session = None
         try:
-            # Create session for Copilot interaction
-            loop = asyncio.get_event_loop()
+            session = await self._client.create_session({
+                "model": self._model,
+                "available_tools": [],
+                "system_message": {
+                    "mode": "replace",
+                    "content": _COPILOT_SYSTEM_PROMPT,
+                },
+            })
 
-            response = await loop.run_in_executor(
-                None,
-                lambda: self._client.chat.completions.create(
-                    model=self._model,
-                    messages=[
-                        {"role": "system", "content": _COPILOT_SYSTEM_PROMPT},
-                        {
-                            "role": "user",
-                            "content": f'Issue {comment.issue_key}:\n"""\n{comment.body}\n"""',
-                        },
-                    ],
-                    max_tokens=256,
-                    temperature=0.1,
-                ),
-            )
+            response = await session.send_and_wait({
+                "prompt": f'Issue {comment.issue_key}:\n"""\n{comment.body}\n"""',
+            })
 
-            text = response.choices[0].message.content.strip()
+            if not response or not response.data or not response.data.content:
+                return None
+
+            text = response.data.content.strip()
             data = json.loads(text)
 
             return CommentClassification(
@@ -173,6 +201,12 @@ class CommentClassifier:
         except Exception as e:
             logger.warning("Copilot classification failed: %s", e)
             return None
+        finally:
+            if session:
+                try:
+                    await session.disconnect()
+                except Exception:
+                    pass
 
     async def _classify_with_local_llm(self, comment: Comment) -> Optional[CommentClassification]:
         """Classify using a local/OpenAI-compatible endpoint (e.g., llama.cpp server)."""
@@ -209,7 +243,7 @@ class CommentClassifier:
         temperature: float,
     ) -> str:
         """Call OpenAI-compatible chat completions endpoint and return message text."""
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
 
         def _do_request() -> str:
             headers = {"Content-Type": "application/json"}

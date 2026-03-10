@@ -1,11 +1,50 @@
 import logging
 import os
+import re
 from typing import Any, Optional
 
 import requests
 from atlassian import Jira
 
 logger = logging.getLogger(__name__)
+
+
+def _adf_to_text(node: Any) -> str:
+    """Recursively convert Atlassian Document Format (ADF) to plain text.
+
+    Jira Cloud API v3 returns description/comment bodies as ADF dicts.
+    This flattens them so keyword matching, classification, and templates
+    all work on readable strings.
+    """
+    if isinstance(node, str):
+        return node
+    if not isinstance(node, dict):
+        return str(node) if node else ""
+
+    parts: list[str] = []
+    ntype = node.get("type", "")
+
+    if ntype == "text":
+        parts.append(node.get("text", ""))
+    elif ntype in ("hardBreak",):
+        parts.append("\n")
+
+    for child in node.get("content", []):
+        parts.append(_adf_to_text(child))
+
+    # block-level nodes get a trailing newline for readability
+    if ntype in ("paragraph", "heading", "bulletList", "orderedList",
+                 "listItem", "codeBlock", "blockquote", "rule"):
+        return "\n".join(p for p in parts if p) + "\n"
+
+    return " ".join(p for p in parts if p)
+
+
+def _ensure_text(value: Any) -> str:
+    """Return *value* as plain text, converting ADF dicts if needed."""
+    if isinstance(value, dict):
+        return _adf_to_text(value).strip()
+    return str(value) if value else ""
 
 
 class JiraClient:
@@ -152,12 +191,12 @@ class JiraClient:
             fields = issue.get("fields", {})
 
             # Check description
-            desc = fields.get("description", "") or ""
+            desc = _ensure_text(fields.get("description", ""))
             urls.extend(self._extract_jenkins_urls(desc))
 
             # Check comments
             for c in fields.get("comment", {}).get("comments", []):
-                urls.extend(self._extract_jenkins_urls(c.get("body", "")))
+                urls.extend(self._extract_jenkins_urls(_ensure_text(c.get("body", ""))))
 
         except Exception as e:
             logger.error("Error detecting Jenkins links for %s: %s", issue_key, e)
@@ -244,17 +283,16 @@ class JiraClient:
     @staticmethod
     def extract_jenkins_links(issue_data: dict) -> list[str]:
         """Extract Jenkins URLs from a pre-fetched issue dict."""
-        import re
-
         pattern = r"https?://[^\s\"'>]+/job/[^\s\"'>]+(?:console|consoleFull|consoleText)[^\s\"'>]*"
         urls: list[str] = []
         fields = issue_data.get("fields", {})
 
-        desc = fields.get("description", "") or ""
+        desc = _ensure_text(fields.get("description", ""))
         urls.extend(re.findall(pattern, desc))
 
         for c in fields.get("comment", {}).get("comments", []):
-            urls.extend(re.findall(pattern, c.get("body", "")))
+            body = _ensure_text(c.get("body", ""))
+            urls.extend(re.findall(pattern, body))
 
         return list(set(urls))
 

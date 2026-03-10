@@ -111,12 +111,20 @@ class TestEventFilter:
         result = event_filter.evaluate(event)
         assert result.accepted is False
 
-    def test_reject_no_keyword_match(self, event_filter):
+    def test_accept_any_non_empty_comment(self, event_filter):
+        """Any non-empty comment on a Bug should pass the filter — classifier handles buckets."""
         payload = _make_payload(comment_body="Looks good to me!")
         event = JiraWebhookEvent(**payload)
         result = event_filter.evaluate(event)
+        assert result.accepted is True
+
+    def test_reject_empty_comment_body(self, event_filter):
+        """Empty comment body should be filtered out."""
+        payload = _make_payload(comment_body="   ")
+        event = JiraWebhookEvent(**payload)
+        result = event_filter.evaluate(event)
         assert result.accepted is False
-        assert "keyword" in result.reason.lower() or "heuristic" in result.reason.lower()
+        assert "empty" in result.reason.lower()
 
     def test_idempotency_rejects_duplicate(self, event_filter):
         payload = _make_payload()

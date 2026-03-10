@@ -7,7 +7,7 @@ from pydantic import BaseModel
 
 
 class CommentType(str, Enum):
-    """MVP v1 classification buckets."""
+    """MVP classification buckets."""
 
     CANNOT_REPRODUCE = "cannot_reproduce"  # Cannot Repro
     NEED_MORE_INFO = "need_more_info"  # Need Info / Logs

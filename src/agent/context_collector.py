@@ -6,7 +6,7 @@ import logging
 from datetime import datetime, timezone
 from typing import Optional
 
-from src.integrations.jira import JiraClient
+from src.integrations.jira import JiraClient, _ensure_text
 from src.models.context import (
     CommentSnapshot,
     ContextCollectionResult,
@@ -57,7 +57,7 @@ class ContextCollector:
                     author=c.get("author", {}).get("displayName", "unknown"),
                     author_role=None,
                     created=c.get("created", ""),
-                    body=c.get("body", ""),
+                    body=_ensure_text(c.get("body", "")),
                 )
                 for c in last_comments_raw
             ]
@@ -80,11 +80,11 @@ class ContextCollector:
             issue_context = IssueContext(
                 issue_key=issue_key,
                 summary=fields.get("summary", ""),
-                description=fields.get("description", "") or "",
+                description=_ensure_text(fields.get("description", "")),
                 issue_type=fields.get("issuetype", {}).get("name", ""),
                 status=fields.get("status", {}).get("name", ""),
                 priority=fields.get("priority", {}).get("name", ""),
-                environment=fields.get("environment") or "",
+                environment=_ensure_text(fields.get("environment", "")),
                 versions=self._extract_versions(fields),
                 components=self._extract_components(fields),
                 labels=fields.get("labels", []),

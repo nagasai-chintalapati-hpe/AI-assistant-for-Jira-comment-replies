@@ -1,7 +1,7 @@
 """Tests for comment classifier – keyword fallback path."""
 
 from datetime import datetime, timezone
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -85,12 +85,14 @@ class TestCopilotClassificationPaths:
     async def test_copilot_success_used(self):
         classifier = CommentClassifier()
         mock_client = MagicMock()
-        mock_response = MagicMock()
         llm_json = (
             '{"comment_type":"by_design","confidence":0.91,' '"reasoning":"Expected behavior"}'
         )
-        mock_response.choices = [MagicMock(message=MagicMock(content=llm_json))]
-        mock_client.chat.completions.create.return_value = mock_response
+        mock_response = MagicMock()
+        mock_response.data.content = llm_json
+        mock_session = AsyncMock()
+        mock_session.send_and_wait.return_value = mock_response
+        mock_client.create_session = AsyncMock(return_value=mock_session)
         classifier._client = mock_client
 
         result = await classifier.classify(_make_comment("This is expected behavior."))
@@ -103,8 +105,10 @@ class TestCopilotClassificationPaths:
         classifier = CommentClassifier()
         mock_client = MagicMock()
         mock_response = MagicMock()
-        mock_response.choices = [MagicMock(message=MagicMock(content="not json"))]
-        mock_client.chat.completions.create.return_value = mock_response
+        mock_response.data.content = "not json"
+        mock_session = AsyncMock()
+        mock_session.send_and_wait.return_value = mock_response
+        mock_client.create_session = AsyncMock(return_value=mock_session)
         classifier._client = mock_client
 
         result = await classifier.classify(_make_comment("Cannot reproduce on my machine."))
