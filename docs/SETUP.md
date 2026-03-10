@@ -1,152 +1,149 @@
-# Setup Guide — MVP v1
+# Setup Guide
 
 ## Prerequisites
 
 - Python 3.10+
-- Jira Cloud instance with API access
-- Copilot SDK API key for AI-powered classification & refinement
+- Jira Cloud project and API token
+- Optional: Copilot API key for LLM enhancement
 
-## Installation
-
-### 1. Clone & enter the project
-
-```bash
-cd AI-assistant-for-Jira-comment-replies
-```
-
-### 2. Create and activate virtual environment
+## Install
 
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
+pip install -e ".[dev]"
 ```
 
-### 3. Install dependencies
-
-```bash
-pip install -e .           # Production deps
-pip install -e ".[dev]"    # + dev tools (black, ruff, mypy, pytest-asyncio)
-```
-
-### 4. Configure environment
+## Configure Environment
 
 ```bash
 cp .env.example .env
 ```
 
-Edit `.env` with your values:
+Set these values in `.env`.
 
-| Variable | Required | Description |
-|---|---|---|
-| `JIRA_BASE_URL` | Yes (for live Jira) | e.g. `https://your-org.atlassian.net` |
-| `JIRA_USERNAME` | Yes (for live Jira) | Your Jira email |
-| `JIRA_API_TOKEN` | Yes (for live Jira) | Generate in Jira → Personal Settings → API tokens |
-| `COPILOT_API_KEY` | No | Leave blank for keyword-only mode |
-| `COPILOT_MODEL` | No | Default: `gpt-4` |
-| `APP_PORT` | No | Default: `8000` |
-| `TEAMS_WEBHOOK_URL` | No | Teams incoming webhook URL for notifications |
-| `SMTP_HOST` | No | SMTP server hostname (leave blank to disable email) |
-| `SMTP_PORT` | No | Default: `587` |
-| `SMTP_USERNAME` | No | SMTP login username |
-| `SMTP_PASSWORD` | No | SMTP login password |
-| `EMAIL_FROM` | No | Sender email address |
-| `EMAIL_TO` | No | Comma-separated recipient addresses |
+### Required for live Jira use
 
-## Running the Application
+| Variable | Description |
+|---|---|
+| `JIRA_BASE_URL` | Jira base URL, e.g. `https://your-org.atlassian.net` |
+| `JIRA_USERNAME` | Jira user email |
+| `JIRA_API_TOKEN` | Jira API token |
 
-### Development
+### Required for secured production
+
+| Variable | Description |
+|---|---|
+| `WEBHOOK_SECRET` | HMAC secret for webhook signature verification |
+| `APPROVAL_API_KEY` | Token required by `/approve` and `/reject` |
+| `ASSISTANT_DB_PATH` | SQLite file path for persistence/idempotency |
+
+### Optional
+
+| Variable | Description |
+|---|---|
+| `COPILOT_API_KEY` | Enables LLM fallback/enhancement |
+| `COPILOT_MODEL` | Default: `claude-sonnet-4.5` |
+| `LLM_PROVIDER` | `copilot`, `llama_cpp`, `local`, or `openai_compat` |
+| `TEAMS_WEBHOOK_URL` | Teams notifications |
+| `SMTP_HOST`, `SMTP_PORT`, `SMTP_USERNAME`, `SMTP_PASSWORD`, `EMAIL_FROM`, `EMAIL_TO` | Email notifications |
+
+## Run API
 
 ```bash
-uvicorn src.api.app:app --reload --host 0.0.0.0 --port 8000
+uvicorn src.api.app:app --host 127.0.0.1 --port 8000
 ```
 
-### Verify it's running
+Health check:
 
 ```bash
-curl http://localhost:8000/health
+curl -sS http://127.0.0.1:8000/health
 ```
 
-## Running Tests
+## Run Tests
 
 ```bash
-# All tests with coverage
-pytest
+pytest -q
+```
 
-# Verbose output
-pytest -v --tb=short
+Coverage report:
 
-# Specific test file
-pytest tests/unit/test_classifier.py
-
-# Coverage report in browser
-pytest --cov=src --cov-report=html
+```bash
+pytest --cov=src --cov-report=term-missing --cov-report=html
 open htmlcov/index.html
 ```
 
-## Registering a Jira Webhook
+## API Endpoints
 
-1. Go to **Jira Settings → System → Webhooks**
-2. Click **Create a webhook**
-3. Set URL: `https://<your-host>:8000/webhook/jira`
-4. Select events: `comment_created`, `comment_updated`
-5. Save
+- `GET /health`
+- `POST /webhook/jira`
+- `GET /drafts`
+- `GET /drafts/{draft_id}`
+- `POST /approve`
+- `POST /reject`
 
-> **Tip:** For local development, use [ngrok](https://ngrok.com/) to expose your local server:
-> ```bash
-> ngrok http 8000
-> ```
-> Then use the ngrok URL in the Jira webhook configuration.
+## Security Headers
 
-## Testing with curl
+When `WEBHOOK_SECRET` is configured, send one of:
+
+- `X-Hub-Signature-256: sha256=<hex-digest>`
+- `X-Webhook-Signature: <hex-digest>`
+
+When `APPROVAL_API_KEY` is configured, include:
+
+- `X-Approval-Token: <APPROVAL_API_KEY>`
+
+## Local Webhook Test
 
 ```bash
-# Simulate a "cannot reproduce" comment
-curl -X POST http://localhost:8000/webhook/jira \
-  -H "Content-Type: application/json" \
-  -d '{
-    "webhookEvent": "comment_created",
-    "timestamp": 1700000001,
-    "issue": {
-      "id": "1", "key": "DEFECT-500",
-      "fields": {
-        "summary": "Upload crash",
-        "issuetype": {"name": "Bug"},
-        "status": {"name": "Open"}
-      }
-    },
-    "comment": {
-      "id": "90001",
-      "body": "Cannot reproduce this on my machine.",
-      "author": {"accountId": "u1", "displayName": "Dev", "emailAddress": "dev@co.com"},
-      "created": "2025-02-23T10:30:00.000+0000",
-      "updated": "2025-02-23T10:30:00.000+0000"
-    }
-  }'
+payload='{"webhookEvent":"comment_created","timestamp":1700000001,"issue":{"id":"1","key":"DEFECT-500","fields":{"summary":"Upload crash","issuetype":{"name":"Bug"},"status":{"name":"Open"}}},"comment":{"id":"90001","body":"Cannot reproduce this on my machine.","author":{"accountId":"u1","displayName":"Dev","emailAddress":"dev@company.com"},"created":"2025-02-23T10:30:00.000+0000","updated":"2025-02-23T10:30:00.000+0000"}}'
+sig=$(printf '%s' "$payload" | openssl dgst -sha256 -hmac "$WEBHOOK_SECRET" -hex | sed 's/^.* //')
 
-# List drafts
-curl http://localhost:8000/drafts
-
-# Approve a draft
-curl -X POST http://localhost:8000/approve \
-  -H "Content-Type: application/json" \
-  -d '{"draft_id": "<DRAFT_ID>", "approved_by": "qa@company.com"}'
+curl -sS -X POST http://127.0.0.1:8000/webhook/jira \
+  -H 'Content-Type: application/json' \
+  -H "X-Hub-Signature-256: sha256=$sig" \
+  -d "$payload"
 ```
+
+Fetch drafts for an issue:
+
+```bash
+curl -sS 'http://127.0.0.1:8000/drafts?issue_key=DEFECT-500'
+```
+
+Approve a draft:
+
+```bash
+curl -sS -X POST http://127.0.0.1:8000/approve \
+  -H 'Content-Type: application/json' \
+  -H "X-Approval-Token: $APPROVAL_API_KEY" \
+  -d '{"draft_id":"<DRAFT_ID>","approved_by":"qa@company.com"}'
+```
+
+## Jira Webhook Setup
+
+1. Jira Settings → System → Webhooks
+2. Create webhook URL: `https://<host>/webhook/jira`
+3. Select comment events (`comment_created`, `comment_updated`)
+4. Save
+
+For local testing, expose port 8000 with ngrok and use the ngrok HTTPS URL.
 
 ## Troubleshooting
 
-### "Missing Jira configuration in environment variables"
-- Ensure `JIRA_BASE_URL`, `JIRA_USERNAME`, and `JIRA_API_TOKEN` are set in `.env`
-- This error only occurs when context collection tries to call live Jira — tests mock the client
+### Missing Jira config
 
-### Tests fail with import errors
-- Make sure you installed with `pip install -e .`
-- Verify your venv is activated: `which python` should point to `.venv/bin/python`
+Set `JIRA_BASE_URL`, `JIRA_USERNAME`, and `JIRA_API_TOKEN` in `.env`.
 
-### "Copilot SDK classification failed"
-- Check `COPILOT_API_KEY` is valid
-- The system gracefully falls back to keyword classification — no action required
+### Missing/invalid webhook signature
+
+Ensure `WEBHOOK_SECRET` matches, and sign the raw payload with HMAC-SHA256.
+
+### Missing/invalid approval token
+
+Set `APPROVAL_API_KEY`, and send `X-Approval-Token` for approve/reject calls.
 
 ### Notifications not sending
-- **Teams:** verify `TEAMS_WEBHOOK_URL` is a valid incoming-webhook URL
-- **Email:** ensure `SMTP_HOST`, `EMAIL_FROM`, and `EMAIL_TO` are all set
-- Both channels are optional — the system works without them
+
+- Teams: verify `TEAMS_WEBHOOK_URL`
+- Email: verify SMTP variables and sender/recipient fields

@@ -2,144 +2,148 @@
 
 **Intern Project 2026** — Nagasai & Yousef
 
-An AI assistant that generates context-aware draft replies to developer comments on Jira defects, using keyword heuristics with optional Copilot SDK.
+AI assistant for Jira defect comments. It listens to Jira webhook events, classifies comment intent, collects issue context, generates a draft reply, and supports manual approve/reject with optional Jira posting and notifications.
 
 ---
 
-## MVP v1 
+## MVP v1 Status
 
 ### Phase 1: Architecture & Scaffolding
-- [x] Project structure, config, `.env` template
-- [x] Main models — Comment, Classification, Context, Draft, Webhook
-- [x] Jira integration — full REST API client (`JiraClient`)
-- [x] Webhook receiver — `POST /webhook/jira` accepts Jira comment events
-- [x] Event filtering — gates on issue type (Bug/Defect), status, trigger keywords, idempotency
-- [x] Tests — Jira client & webhook filter
+- [x] Project structure, config, and `.env` template
+- [x] Core models (`Comment`, `Classification`, `Context`, `Draft`, `Webhook`)
+- [x] Jira REST integration (`JiraClient`)
+- [x] Webhook receiver (`POST /webhook/jira`)
+- [x] Event filtering (issue type, status, keywords, idempotency)
+- [x] Unit tests for Jira client and webhook filter
 
 ### Phase 2: Comment Classification
-- [x] Comment classification — 4 buckets via keywords and Copilot SDK
-- [x] Tests — classifier unit tests
+- [x] 4-bucket keyword classification with optional Copilot SDK fallback
+- [x] Unit tests for classifier
 
 ### Phase 3: Context Collection & Draft Generation
-- [x] Context retrieval — Jira issue fields, last N comments, attachments, linked issues, changelog
-- [x] Jenkins link detection — extracts console-log URLs from descriptions & comments
-- [x] Draft generation — template-per-bucket with context and Copilot SDK cleanup
-- [x] Evidence & citations — attachments and Jenkins logs tracked per draft
-- [x] Suggested labels and actions — auto-suggested per classification type
-- [x] Tests — context collector & drafter unit tests
+- [x] Context collection (issue fields, recent comments, attachments, linked issues, changelog)
+- [x] Jenkins log URL extraction
+- [x] Template-based drafting with optional LLM polish
+- [x] Evidence/citation tracking + suggested labels/actions
+- [x] Unit tests for context collector and drafter
 
 ### Phase 4: Full Pipeline & Approval Workflow
-- [x] Full pipeline orchestration — webhook → filter → classify → context → draft → store
-- [x] Draft store & API — `GET /drafts`, `GET /drafts/{id}`, filter by issue key
-- [x] Approval workflow — `POST /approve`, `POST /reject` with feedback
-- [x] Tests — end-to-end pipeline tests via FastAPI TestClient
+- [x] End-to-end pipeline orchestration
+- [x] Draft storage + API (`GET /drafts`, `GET /drafts/{id}`)
+- [x] Approve/reject workflow (`POST /approve`, `POST /reject`)
+- [x] Integration tests via FastAPI `TestClient`
 
 ### Phase 5: Notifications
-- [x] Notifications — Teams webhook cards + Email SMTP on draft generated, approved or rejected
-- [x] NotificationService facade — fan-out to channels
-- [x] Wired into pipeline, approve, and reject endpoints
-- [x] Tests — notification unit tests Teams, Email, service facade
-- [x] **Final:** 89 unit + integration tests, 78% code coverage 
+- [x] Optional Teams webhook and Email (SMTP)
+- [x] Notification tests
 
-## Architecture
+## High-Level Flow
 
 ```
 Jira Cloud (Webhook)
     │
     ▼
-POST /webhook/jira  ──▶  EventFilter (type, status, keywords, idempotency)
+POST /webhook/jira  ──▶  EventFilter
     │
     ▼
-CommentClassifier  ──▶  Keyword rules │ Copilot SDK fallback
+CommentClassifier
     │
     ▼
-ContextCollector   ──▶  Issue fields, comments, attachments, changelog, Jenkins links
+ContextCollector
     │
     ▼
-ResponseDrafter    ──▶  Template fill + optional Copilot SDK polish
+ResponseDrafter
     │
     ▼
-Draft Store        ──▶  GET /drafts  │  POST /approve  │  POST /reject
+SQLite Draft Store  ──▶  GET /drafts | POST /approve | POST /reject
     │
     ▼
-Notifications      ──▶  Teams Webhook (card)  │  Email (SMTP)
+Optional Notifications (Teams / Email)
 ```
 
-## Classification Buckets (MVP v1)
+## Classification Buckets
 
-| Bucket | Trigger keywords |
+| Bucket | Typical triggers |
 |---|---|
 | Cannot Repro | "cannot reproduce", "can't repro", "works on my machine" |
 | Need Info / Logs | "need logs", "provide logs", "need more info" |
 | Fixed — Validate | "fix ready", "fix deployed", "please validate", "already fixed" |
 | By Design | "as designed", "by design", "expected behavior" |
-| Other | (fallback) |
+| Other | fallback |
+
+## Quick Start
+
+```bash
+# 1) Create and activate virtual environment
+python3 -m venv .venv
+source .venv/bin/activate
+
+# 2) Install project + dev dependencies
+pip install -e ".[dev]"
+
+# 3) Configure environment
+cp .env.example .env
+
+# 4) Run tests
+pytest -q
+
+# 5) Run API
+uvicorn src.api.app:app --host 127.0.0.1 --port 8000
+
+# 6) Verify service
+curl -sS http://127.0.0.1:8000/health
+```
+
+## Required Configuration
+
+### Minimum for local development
+- `JIRA_BASE_URL`
+- `JIRA_USERNAME`
+- `JIRA_API_TOKEN`
+
+### Required for secured production use
+- `WEBHOOK_SECRET` (HMAC signature validation)
+- `APPROVAL_API_KEY` (required on approve/reject endpoints)
+- `ASSISTANT_DB_PATH` (persistent SQLite DB path)
+
+### Optional features
+- `COPILOT_API_KEY` (LLM enhancement)
+- `TEAMS_WEBHOOK_URL` (Teams notifications)
+- `SMTP_HOST`, `SMTP_PORT`, `SMTP_USERNAME`, `SMTP_PASSWORD`, `EMAIL_FROM`, `EMAIL_TO` (email notifications)
+
+## API Endpoints
+
+- `GET /health` — health check
+- `POST /webhook/jira` — receive Jira comment webhook events
+- `GET /drafts` — list drafts (supports `issue_key` filter)
+- `GET /drafts/{draft_id}` — get one draft
+- `POST /approve` — approve draft (and attempt Jira post)
+- `POST /reject` — reject draft with feedback
+
+### Auth headers
+- Webhook signature: `X-Hub-Signature-256: sha256=<digest>` (or `X-Webhook-Signature: <digest>`)
+- Approve/reject token: `X-Approval-Token: <APPROVAL_API_KEY>`
 
 ## Project Structure
 
 ```
 ├── src/
-│   ├── config.py                 # Centralised settings (env vars)
-│   ├── agent/
-│   │   ├── classifier.py         # Comment classification (keywords + Copilot SDK)
-│   │   ├── context_collector.py  # Jira issue context gathering
-│   │   └── drafter.py            # Template-based draft generation
-│   ├── api/
-│   │   ├── app.py                # FastAPI webhook & approval endpoints
-│   │   └── event_filter.py       # Webhook event gate rules
-│   ├── integrations/
-│   │   ├── jira.py               # Jira Cloud REST API client
-│   │   └── notifications.py      # Teams webhook + Email (SMTP) notifier
-│   └── models/
-│       ├── classification.py     # CommentType enum + classification model
-│       ├── comment.py            # Comment data model
-│       ├── context.py            # IssueContext + collection result
-│       ├── draft.py              # Draft + DraftStatus models
-│       └── webhook.py            # JiraWebhookEvent payload model
-├── tests/
-│   ├── conftest.py               # Shared fixtures
-│   └── unit/
-│       ├── test_classifier.py
-│       ├── test_context_collector.py
-│       ├── test_drafter.py
-│       ├── test_jira_client.py
-│       ├── test_pipeline.py      # End-to-end via FastAPI TestClient
-│       └── test_webhook_filter.py
+│   ├── api/                  # FastAPI endpoints and event filtering
+│   ├── agent/                # Classification, context collection, drafting
+│   ├── integrations/         # Jira + notification adapters
+│   ├── models/               # Pydantic data models
+│   ├── storage/              # SQLite persistence
+│   └── config.py             # Environment-driven settings
+├── tests/                    # Unit/integration tests
 ├── docs/
 │   ├── ARCHITECTURE.md
 │   └── SETUP.md
 ├── .env.example
-├── .gitignore
 ├── pyproject.toml
-├── pytest.ini
 └── README.md
-```
-
-## Quick Start
-
-```bash
-# 1. Create & activate venv
-python3 -m venv .venv
-source .venv/bin/activate
-
-# 2. Install
-pip install -e ".[dev]"
-
-# 3. Configure
-cp .env.example .env
-# Edit .env with your Jira credentials (Copilot SDK key is optional)
-
-# 4. Run tests
-pytest
-
-# 5. Start server
-uvicorn src.api.app:app --reload --port 8000
-
-# 6. Health check
-curl http://localhost:8000/health
 ```
 
 ## Documentation
 
-- [Architecture](docs/ARCHITECTURE.md) — Component design and data flow
-- [Setup Guide](docs/SETUP.md) — Installation, configuration, and testing
+- [Architecture](docs/ARCHITECTURE.md)
+- [Setup Guide](docs/SETUP.md)

@@ -1,74 +1,97 @@
 """FastAPI application – full pipeline + approval workflow.
 
-Webhook → filter → classify → context → draft → store.
-Approval endpoints for human-in-the-loop review.
+Pipeline: Webhook → Filter → Classify → Context → Draft → Store
+Approval: Human reviews draft → Approve (posts to Jira) or Reject
 """
 
-from contextlib import asynccontextmanager
-from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import JSONResponse
-from pydantic import ValidationError
+import asyncio
+import hashlib
+import hmac
 import logging
 import os
+from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from typing import Optional
 
-from src.models.webhook import JiraWebhookEvent
-from src.models.comment import Comment
-from src.models.draft import DraftStatus
-from src.api.event_filter import EventFilter
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.responses import JSONResponse
+from pydantic import ValidationError
+
+import src.config  # noqa: F401 — triggers dotenv loading
+
 from src.agent.classifier import CommentClassifier
 from src.agent.drafter import ResponseDrafter
-from src.integrations.notifications import (
-    TeamsNotifier,
-    EmailNotifier,
-    NotificationService,
-)
+from src.api.event_filter import EventFilter
+from src.models.comment import Comment
+from src.models.draft import DraftStatus
+from src.models.webhook import JiraWebhookEvent
+from src.storage import SQLiteStore
 
 logger = logging.getLogger(__name__)
 
-# singletons 
-event_filter = EventFilter()
 
-# Copilot SDK API key — optional; leave empty for keyword-only mode
-_COPILOT_API_KEY: Optional[str] = os.getenv("COPILOT_API_KEY")
-_COPILOT_MODEL: str = os.getenv("COPILOT_MODEL", "gpt-4")
+# Configuration
+_ENV = os.getenv("ENV", "development").lower()
+_WEBHOOK_SECRET: Optional[str] = (os.getenv("WEBHOOK_SECRET") or "").strip() or None
+_APPROVAL_API_KEY: Optional[str] = os.getenv("APPROVAL_API_KEY") or None
+_DB_PATH = os.getenv("ASSISTANT_DB_PATH", ".data/assistant.db")
+_GITHUB_TOKEN: Optional[str] = os.getenv("GITHUB_TOKEN") or os.getenv("COPILOT_API_KEY") or None
+_COPILOT_MODEL: str = os.getenv("COPILOT_MODEL", "claude-sonnet-4.5")
 
-classifier = CommentClassifier(api_key=_COPILOT_API_KEY, model=_COPILOT_MODEL)
-drafter = ResponseDrafter(api_key=_COPILOT_API_KEY, model=_COPILOT_MODEL)
-
-# In-memory draft store (MVP v1)
-draft_store: dict[str, dict] = {}
-
-# Notification service (optional — disabled when env vars are empty)
-_teams = TeamsNotifier(webhook_url=os.getenv("TEAMS_WEBHOOK_URL"))
-_email = EmailNotifier(
-    smtp_host=os.getenv("SMTP_HOST"),
-    smtp_port=int(os.getenv("SMTP_PORT", "587")),
-    smtp_username=os.getenv("SMTP_USERNAME"),
-    smtp_password=os.getenv("SMTP_PASSWORD"),
-    from_address=os.getenv("EMAIL_FROM"),
-    to_addresses=[
-        a.strip()
-        for a in (os.getenv("EMAIL_TO") or "").split(",")
-        if a.strip()
-    ],
-)
-notifier = NotificationService(teams=_teams, email=_email)
+# Bot-loop protection: marker prepended to every comment the bot posts.
+BOT_COMMENT_MARKER = "\u200B\u200C\u200B\u200C\u200B"
 
 
+# Persistent draft store (dict-like wrapper over SQLite)
+class PersistentDraftStore:
+    """Dict-like interface backed by SQLite for test compatibility."""
+
+    def __init__(self, backend: SQLiteStore):
+        self._backend = backend
+
+    def __setitem__(self, draft_id: str, value: dict) -> None:
+        self._backend.upsert_draft(value)
+
+    def __getitem__(self, draft_id: str) -> dict:
+        value = self._backend.get_draft(draft_id)
+        if value is None:
+            raise KeyError(draft_id)
+        return value
+
+    def __contains__(self, draft_id: str) -> bool:
+        return self._backend.get_draft(draft_id) is not None
+
+    def __len__(self) -> int:
+        return len(self._backend.list_drafts())
+
+    def get(self, draft_id: str) -> Optional[dict]:
+        return self._backend.get_draft(draft_id)
+
+    def values(self) -> list[dict]:
+        return self._backend.list_drafts()
+
+    def clear(self) -> None:
+        self._backend.clear_drafts()
+
+
+# Singletons
+_draft_backend = SQLiteStore(_DB_PATH)
+event_filter = EventFilter(event_store=_draft_backend)
+classifier = CommentClassifier(github_token=_GITHUB_TOKEN, model=_COPILOT_MODEL)
+drafter = ResponseDrafter(github_token=_GITHUB_TOKEN, model=_COPILOT_MODEL)
+draft_store = PersistentDraftStore(_draft_backend)
+
+
+# App lifecycle
 @asynccontextmanager
 async def lifespan(app_instance: FastAPI):
-    """Application lifespan — startup / shutdown."""
-    channels = []
-    if _teams.enabled:
-        channels.append("Teams")
-    if _email.enabled:
-        channels.append("Email")
-    logger.info(
-        "Starting Jira Comment Assistant API (v0.4.0) — notifications: %s",
-        ", ".join(channels) if channels else "none",
-    )
+    """Validate production config on startup."""
+    if _ENV == "production":
+        if not _WEBHOOK_SECRET:
+            raise RuntimeError("WEBHOOK_SECRET is required in production")
+        if not _APPROVAL_API_KEY:
+            raise RuntimeError("APPROVAL_API_KEY is required in production")
+    logger.info("Starting Jira Comment Assistant API (v0.3.0)")
     yield
 
 
@@ -80,9 +103,10 @@ app = FastAPI(
 )
 
 
+# Health check
 @app.get("/health")
 async def health_check():
-    """Health check endpoint."""
+    """Return service status and version."""
     return {
         "status": "healthy",
         "timestamp": datetime.now(timezone.utc).isoformat(),
@@ -94,25 +118,26 @@ async def health_check():
         },
     }
 
-#  Webhook endpoint     
+
+# Webhook endpoint
 @app.post("/webhook/jira")
 async def jira_webhook(request: Request):
     """
-    Webhook endpoint for Jira events.
+    Receive a Jira webhook event and run the full pipeline:
 
-    Full pipeline:
-    1. Parse & validate payload → JiraWebhookEvent.
-    2. EventFilter gates (type, status, keyword, idempotency).
-    3. Build Comment model from event.
-    4. Classify → collect context → draft response → store.
-    5. Return draft summary.
+    1. Validate signature (if WEBHOOK_SECRET is set).
+    2. Parse payload into JiraWebhookEvent.
+    3. Run through EventFilter gates.
+    4. Orchestrate: classify → context → draft → store.
     """
+    body = await request.body()
+    _verify_webhook_signature(request, body)
+
     try:
         payload = await request.json()
     except Exception:
         raise HTTPException(status_code=400, detail="Invalid JSON payload")
 
-    # Parse
     try:
         event = JiraWebhookEvent(**payload)
     except ValidationError as exc:
@@ -129,7 +154,6 @@ async def jira_webhook(request: Request):
         event.comment.id if event.comment else None,
     )
 
-    # Filter
     result = event_filter.evaluate(event)
     if not result.accepted:
         logger.info("Event filtered out: %s", result.reason)
@@ -139,40 +163,33 @@ async def jira_webhook(request: Request):
             "event_id": result.event_id,
         }
 
-    # Orchestrate
-    return await handle_comment_event(event)
+    return await _handle_comment_event(event)
 
 
-# Orchestration
-
-async def handle_comment_event(event: JiraWebhookEvent):
+# Pipeline 
+async def _handle_comment_event(event: JiraWebhookEvent) -> dict:
     """
     Full MVP v1 pipeline:
-      Comment → Classify → Context → Draft → Store
+    Trigger → Retrieve (context + Jenkins) → Classify → Draft → Store → Notify
     """
     assert event.comment is not None
     assert event.issue is not None
 
-    # 1. Build Comment model from webhook event
-    comment = Comment(
-        comment_id=event.comment.id,
-        issue_key=event.issue.key,
-        author=(
-            event.comment.author.displayName
-            or event.comment.author.emailAddress
-            or "unknown"
-        ),
-        created=datetime.fromisoformat(
-            event.comment.created.replace("+0000", "+00:00")
-        ) if event.comment.created else datetime.now(timezone.utc),
-        updated=datetime.fromisoformat(
-            event.comment.updated.replace("+0000", "+00:00")
-        ) if event.comment.updated else datetime.now(timezone.utc),
-        body=event.comment.body,
+    # 1. Build Comment model
+    comment = _build_comment(event)
+
+    # 2. Retrieve: Jira issue + attachments + last comments + Jenkins console logs
+    loop = asyncio.get_running_loop()
+    context = await loop.run_in_executor(None, _collect_context_safe, comment.issue_key)
+    logger.info(
+        "Collected context for %s (jenkins_links=%d, attachments=%d)",
+        comment.issue_key,
+        len(context.jenkins_links or []),
+        len((context.issue_context.attached_files or []) if context.issue_context else []),
     )
 
-    # 2. Classify
-    classification = classifier.classify(comment)
+    # 3. Classify (with full context for richer evidence-based classification)
+    classification = await classifier.classify(comment, context=context)
     logger.info(
         "Classified %s comment %s → %s (%.2f)",
         comment.issue_key,
@@ -181,15 +198,24 @@ async def handle_comment_event(event: JiraWebhookEvent):
         classification.confidence,
     )
 
-    # 3. Context collection (deferred if Jira creds not configured)
-    context = _collect_context_safe(comment.issue_key)
-
-    # 4. Draft response
-    draft = drafter.draft(comment, classification, context)
+    # 4. Draft response + evidence list
+    draft = await drafter.draft(comment, classification, context)
     logger.info("Generated draft %s for %s", draft.draft_id, comment.issue_key)
 
     # 5. Store
-    draft_store[draft.draft_id] = draft.model_dump(mode="json")
+    draft_data = draft.model_dump(mode="json")
+    draft_store[draft.draft_id] = draft_data
+
+    # 6. Notify reviewers (best-effort)
+    try:
+        from src.integrations.notifications import notify_draft_event
+
+        await loop.run_in_executor(
+            None,
+            lambda: notify_draft_event(draft_data, event_name="generated"),
+        )
+    except Exception as exc:
+        logger.warning("Notification failed (non-fatal): %s", exc)
 
     # 6. Notify (Teams / Email — optional, fire-and-forget)
     notifier.notify_draft_generated(
@@ -211,31 +237,7 @@ async def handle_comment_event(event: JiraWebhookEvent):
     }
 
 
-def _collect_context_safe(issue_key: str):
-    """Try to collect context from Jira; return minimal stub on failure."""
-    try:
-        from src.agent.context_collector import ContextCollector
-
-        collector = ContextCollector()
-        return collector.collect(issue_key)
-    except Exception as exc:
-        logger.warning("Context collection skipped (%s) – using stub", exc)
-        from src.models.context import IssueContext, ContextCollectionResult
-
-        return ContextCollectionResult(
-            issue_context=IssueContext(
-                issue_key=issue_key,
-                summary="",
-                description="",
-                issue_type="Bug",
-                status="Open",
-                priority="Medium",
-            ),
-            collection_timestamp=datetime.now(timezone.utc),
-            collection_duration_ms=0.0,
-        )
-
-#  Draft retrieval   
+# Draft retrieval
 @app.get("/drafts/{draft_id}")
 async def get_draft(draft_id: str):
     """Retrieve a stored draft by ID."""
@@ -253,37 +255,70 @@ async def list_drafts(issue_key: Optional[str] = None):
         drafts = [d for d in drafts if d.get("issue_key") == issue_key]
     return {"count": len(drafts), "drafts": drafts}
 
-#  Approval endpoint
+
+# Approval / rejection
+@app.post("/approve/{draft_id}")
+async def approve_draft_short(draft_id: str, request: Request):
+    """Approve a draft by path — POST /approve/draft_abc123."""
+    return await _do_approve(draft_id, request)
+
+
 @app.post("/approve")
 async def approve_draft(request: Request):
-    """
-    Approve a draft response.
-    On approval the draft is marked and (optionally) posted to Jira.
-    """
-    try:
-        payload = await request.json()
-        draft_id = payload.get("draft_id")
-        approved_by = payload.get("approved_by")
+    """Approve a draft (JSON body with draft_id)."""
+    payload = await request.json()
+    draft_id = payload.get("draft_id")
+    return await _do_approve(draft_id, request, approved_by=payload.get("approved_by"))
 
-        if draft_id not in draft_store:
+
+async def _do_approve(draft_id: str, request: Request, approved_by: str | None = None):
+    """Shared approve logic."""
+    try:
+        _verify_approval_auth(request)
+
+        if not draft_id or draft_id not in draft_store:
             raise HTTPException(status_code=404, detail="Draft not found")
 
-        draft_store[draft_id]["status"] = DraftStatus.APPROVED.value
-        draft_store[draft_id]["approved_by"] = approved_by
-        draft_store[draft_id]["approved_at"] = datetime.now(timezone.utc).isoformat()
+        if approved_by is None:
+            try:
+                payload = await request.json()
+                approved_by = payload.get("approved_by")
+            except Exception:
+                approved_by = "api"
 
+        draft = draft_store.get(draft_id)
+        assert draft is not None
+        draft["status"] = DraftStatus.APPROVED.value
+        draft["approved_by"] = approved_by
+        draft["approved_at"] = datetime.now(timezone.utc).isoformat()
+
+        post_result = _post_approved_draft_to_jira(draft)
+        if post_result["posted_to_jira"]:
+            draft["status"] = DraftStatus.POSTED.value
+            draft["posted_at"] = datetime.now(timezone.utc).isoformat()
+            draft["jira_comment_id"] = post_result["jira_comment_id"]
+
+        draft_store[draft_id] = draft
         logger.info("Draft %s approved by %s", draft_id, approved_by)
 
-        # Notify (Teams / Email)
-        notifier.notify_draft_approved(
-            draft_id=draft_id,
-            issue_key=draft_store[draft_id].get("issue_key", ""),
-            approved_by=approved_by or "unknown",
-        )
+        # Notify on approval (best-effort)
+        try:
+            loop = asyncio.get_running_loop()
+            from src.integrations.notifications import notify_draft_event
 
-        # TODO: Post comment to Jira via JiraClient.add_comment()
+            await loop.run_in_executor(
+                None,
+                lambda: notify_draft_event(
+                    draft,
+                    event_name="approved",
+                    actor=approved_by,
+                ),
+            )
+        except Exception as exc:
+            logger.warning("Approval notification failed (non-fatal): %s", exc)
 
-        return {"status": "approved", "draft_id": draft_id}
+        return {"status": "approved", "draft_id": draft_id, **post_result}
+
     except HTTPException:
         raise
     except Exception as e:
@@ -291,30 +326,61 @@ async def approve_draft(request: Request):
         raise HTTPException(status_code=500, detail="Failed to approve draft")
 
 
+@app.post("/reject/{draft_id}")
+async def reject_draft_short(draft_id: str, request: Request):
+    """Reject a draft by path — POST /reject/draft_abc123."""
+    return await _do_reject(draft_id, request)
+
+
 @app.post("/reject")
 async def reject_draft(request: Request):
-    """Reject a draft response with optional feedback."""
-    try:
-        payload = await request.json()
-        draft_id = payload.get("draft_id")
-        feedback = payload.get("feedback", "")
+    """Reject a draft (JSON body with draft_id)."""
+    payload = await request.json()
+    draft_id = payload.get("draft_id")
+    return await _do_reject(draft_id, request, feedback=payload.get("feedback", ""))
 
-        if draft_id not in draft_store:
+
+async def _do_reject(draft_id: str, request: Request, feedback: str = ""):
+    """Shared reject logic."""
+    try:
+        _verify_approval_auth(request)
+
+        if not draft_id or draft_id not in draft_store:
             raise HTTPException(status_code=404, detail="Draft not found")
 
-        draft_store[draft_id]["status"] = DraftStatus.REJECTED.value
-        draft_store[draft_id]["feedback"] = feedback
+        if not feedback:
+            try:
+                payload = await request.json()
+                feedback = payload.get("feedback", "")
+            except Exception:
+                pass
+
+        draft = draft_store.get(draft_id)
+        assert draft is not None
+        draft["status"] = DraftStatus.REJECTED.value
+        draft["feedback"] = feedback
+        draft_store[draft_id] = draft
 
         logger.info("Draft %s rejected. Feedback: %s", draft_id, feedback)
 
-        # Notify (Teams / Email)
-        notifier.notify_draft_rejected(
-            draft_id=draft_id,
-            issue_key=draft_store[draft_id].get("issue_key", ""),
-            feedback=feedback,
-        )
+        # Notify on rejection (best-effort)
+        try:
+            loop = asyncio.get_running_loop()
+            from src.integrations.notifications import notify_draft_event
+
+            await loop.run_in_executor(
+                None,
+                lambda: notify_draft_event(
+                    draft,
+                    event_name="rejected",
+                    feedback=feedback,
+                ),
+            )
+        except Exception as exc:
+            logger.warning("Rejection notification failed (non-fatal): %s", exc)
 
         return {"status": "rejected", "draft_id": draft_id}
+
     except HTTPException:
         raise
     except Exception as e:
@@ -322,6 +388,120 @@ async def reject_draft(request: Request):
         raise HTTPException(status_code=500, detail="Failed to reject draft")
 
 
+# Internal helpers
+def _build_comment(event: JiraWebhookEvent) -> Comment:
+    """Convert a webhook event into a Comment model."""
+    c = event.comment
+    return Comment(
+        comment_id=c.id,
+        issue_key=event.issue.key,
+        author=c.author.displayName or c.author.emailAddress or "unknown",
+        created=(
+            datetime.fromisoformat(c.created.replace("+0000", "+00:00"))
+            if c.created
+            else datetime.now(timezone.utc)
+        ),
+        updated=(
+            datetime.fromisoformat(c.updated.replace("+0000", "+00:00"))
+            if c.updated
+            else datetime.now(timezone.utc)
+        ),
+        body=c.body,
+    )
+
+
+def _collect_context_safe(issue_key: str):
+    """Collect context from Jira; return a minimal stub on failure."""
+    try:
+        from src.agent.context_collector import ContextCollector
+
+        return ContextCollector().collect(issue_key)
+    except Exception as exc:
+        logger.warning("Context collection skipped (%s) – using stub", exc)
+        from src.models.context import ContextCollectionResult, IssueContext
+
+        return ContextCollectionResult(
+            issue_context=IssueContext(
+                issue_key=issue_key,
+                summary="",
+                description="",
+                issue_type="Bug",
+                status="Open",
+                priority="Medium",
+            ),
+            collection_timestamp=datetime.now(timezone.utc),
+            collection_duration_ms=0.0,
+        )
+
+
+def _verify_webhook_signature(request: Request, body: bytes) -> None:
+    """Validate HMAC signature when WEBHOOK_SECRET is configured."""
+    if not _WEBHOOK_SECRET:
+        return
+
+    provided = (
+        request.headers.get("x-hub-signature-256")
+        or request.headers.get("x-hub-signature")
+        or request.headers.get("x-webhook-signature")
+    )
+    if not provided:
+        raise HTTPException(status_code=401, detail="Missing webhook signature")
+
+    digest = hmac.new(_WEBHOOK_SECRET.encode("utf-8"), body, hashlib.sha256).hexdigest()
+    expected = f"sha256={digest}"
+
+    if not (hmac.compare_digest(provided, expected) or hmac.compare_digest(provided, digest)):
+        raise HTTPException(status_code=401, detail="Invalid webhook signature")
+
+
+def _verify_approval_auth(request: Request) -> None:
+    """Require a shared token on approve/reject when configured."""
+    if not _APPROVAL_API_KEY:
+        return
+
+    provided = request.headers.get("x-approval-token")
+    if not provided:
+        raise HTTPException(status_code=401, detail="Missing approval token")
+    if not hmac.compare_digest(provided, _APPROVAL_API_KEY):
+        raise HTTPException(status_code=401, detail="Invalid approval token")
+
+
+def _post_approved_draft_to_jira(draft: dict) -> dict:
+    """Post an approved draft as a Jira comment; return outcome metadata."""
+    try:
+        from src.integrations.jira import JiraClient
+
+        issue_key = draft.get("issue_key")
+        body = draft.get("body", "")
+        if not issue_key or not body:
+            return {
+                "posted_to_jira": False,
+                "jira_comment_id": None,
+                "post_reason": "missing issue key or body",
+            }
+
+        # Append invisible bot marker so we can detect our own comments and avoid loops
+        tagged_body = f"{body}{BOT_COMMENT_MARKER}"
+        comment_id = JiraClient().add_comment(issue_key=issue_key, comment_body=tagged_body)
+        return {
+            "posted_to_jira": True,
+            "jira_comment_id": comment_id,
+            "post_reason": None,
+        }
+    except Exception as exc:
+        logger.warning(
+            "Jira post skipped/failed for draft %s: %s",
+            draft.get("draft_id"),
+            exc,
+        )
+        return {
+            "posted_to_jira": False,
+            "jira_comment_id": None,
+            "post_reason": str(exc),
+        }
+
+
+# Development server
 if __name__ == "__main__":
     import uvicorn
 

@@ -5,7 +5,8 @@ Jenkins console-log links gathered by the ContextCollector.
 """
 
 from datetime import datetime
-from typing import Optional, Any
+from typing import Any, Optional
+
 from pydantic import BaseModel
 
 
@@ -50,5 +51,6 @@ class ContextCollectionResult(BaseModel):
 
     issue_context: IssueContext
     jenkins_links: Optional[list[str]] = None
+    jenkins_log_snippets: Optional[dict[str, str]] = None
     collection_timestamp: datetime
     collection_duration_ms: float
