@@ -98,7 +98,7 @@ async def lifespan(app_instance: FastAPI):
 app = FastAPI(
     title="Jira Comment Assistant",
     description="AI assistant for responding to Jira defect comments",
-    version="0.3.0",
+    version="0.4.0",
     lifespan=lifespan,
 )
 
@@ -110,8 +110,12 @@ async def health_check():
     return {
         "status": "healthy",
         "timestamp": datetime.now(timezone.utc).isoformat(),
-        "version": "0.3.0",
+        "version": "0.4.0",
         "drafts_in_store": len(draft_store),
+        "notifications": {
+            "teams": _teams.enabled,
+            "email": _email.enabled,
+        },
     }
 
 
@@ -212,6 +216,15 @@ async def _handle_comment_event(event: JiraWebhookEvent) -> dict:
         )
     except Exception as exc:
         logger.warning("Notification failed (non-fatal): %s", exc)
+
+    # 6. Notify (Teams / Email — optional, fire-and-forget)
+    notifier.notify_draft_generated(
+        draft_id=draft.draft_id,
+        issue_key=comment.issue_key,
+        classification=classification.comment_type.value,
+        confidence=classification.confidence,
+        body_preview=draft.body,
+    )
 
     return {
         "status": "processed",
