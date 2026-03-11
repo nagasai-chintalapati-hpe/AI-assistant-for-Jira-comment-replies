@@ -147,7 +147,10 @@ class ResponseDrafter:
         # 3. Build citations from context
         citations = self._build_citations(context)
 
-        # 4. Assemble Draft
+        # 4. Build evidence_used list from RAG snippets
+        evidence_used = self._build_evidence_used(context)
+
+        # 5. Assemble Draft
         return Draft(
             draft_id=f"draft_{int(datetime.now(timezone.utc).timestamp())}",
             issue_key=comment.issue_key,
@@ -160,6 +163,9 @@ class ResponseDrafter:
             suggested_labels=self._suggest_labels(classification),
             confidence_score=classification.confidence,
             citations=citations,
+            evidence_used=evidence_used or None,
+            classification_type=classification.comment_type.value,
+            classification_reasoning=classification.reasoning,
         )
 
     #  Copilot SDK refinement     
@@ -234,7 +240,7 @@ class ResponseDrafter:
     #  Evidence & citation helpers   
     @staticmethod
     def _format_existing_evidence(context: ContextCollectionResult) -> str:
-        """Format attachments and Jenkins links as bullet list."""
+        """Format attachments, Jenkins links, and RAG snippets as bullet list."""
         lines: list[str] = []
         if context.issue_context.attached_files:
             for att in context.issue_context.attached_files[:5]:
@@ -243,6 +249,12 @@ class ResponseDrafter:
         if context.jenkins_links:
             for url in context.jenkins_links[:3]:
                 lines.append(f"• Jenkins log: {url}")
+        if context.rag_snippets:
+            for snippet in context.rag_snippets[:3]:
+                source = snippet.source_title
+                score = f"{snippet.relevance_score:.0%}"
+                preview = snippet.content[:120].replace("\n", " ")
+                lines.append(f"• [{source}] ({score}): {preview}…")
         return "\n".join(lines) if lines else "• (none collected yet)"
 
     @staticmethod
@@ -271,12 +283,37 @@ class ResponseDrafter:
 
     @staticmethod
     def _build_citations(context: ContextCollectionResult) -> list[dict[str, str]]:
-        """Build citation list from Jenkins links and other sources."""
+        """Build citation list from Jenkins links, RAG snippets, and other sources."""
         citations: list[dict[str, str]] = []
         if context.jenkins_links:
             for url in context.jenkins_links:
                 citations.append({"source": "Jenkins", "url": url})
+        if context.rag_snippets:
+            for snippet in context.rag_snippets:
+                citation: dict[str, str] = {
+                    "source": snippet.source_title,
+                    "type": snippet.source_type,
+                }
+                if snippet.source_url:
+                    citation["url"] = snippet.source_url
+                citation["excerpt"] = snippet.content[:200]
+                citations.append(citation)
         return citations
+
+    @staticmethod
+    def _build_evidence_used(context: ContextCollectionResult) -> list[str]:
+        """Build a human-readable list of evidence sources used."""
+        evidence: list[str] = []
+        if context.jenkins_links:
+            for url in context.jenkins_links:
+                evidence.append(f"Jenkins log: {url}")
+        if context.rag_snippets:
+            for snippet in context.rag_snippets:
+                label = f"{snippet.source_type.title()}: {snippet.source_title}"
+                if snippet.relevance_score >= 0.5:
+                    label += f" (relevance: {snippet.relevance_score:.0%})"
+                evidence.append(label)
+        return evidence
 
     # Suggested labels & actions
 
