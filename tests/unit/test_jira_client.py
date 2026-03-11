@@ -71,7 +71,7 @@ def jira_client():
     with patch("src.integrations.jira.Jira") as MockJira:
         mock_instance = MagicMock()
         MockJira.return_value = mock_instance
-        mock_instance.issue_get.return_value = FAKE_ISSUE
+        mock_instance.issue.return_value = FAKE_ISSUE
 
         client = JiraClient(
             base_url="https://jira.example.com",
@@ -150,6 +150,6 @@ class TestDetectJenkinsLinks:
                 "comment": {"comments": []},
             },
         }
-        jira_client.client.issue_get.return_value = no_jenkins
+        jira_client.client.issue.return_value = no_jenkins
         urls = jira_client.detect_jenkins_links("DEFECT-123")
         assert urls == []
