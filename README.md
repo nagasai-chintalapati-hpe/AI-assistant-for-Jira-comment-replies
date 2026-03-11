@@ -6,7 +6,7 @@ An AI assistant that generates context-aware draft replies to developer comments
 
 ---
 
-## MVP v1 
+## Completed
 
 ### Phase 1: Architecture & Scaffolding
 - [x] Project structure, config, `.env` template
@@ -65,7 +65,7 @@ Draft Store        ──▶  GET /drafts  │  POST /approve  │  POST /reject
 Notifications      ──▶  Teams Webhook (card)  │  Email (SMTP)
 ```
 
-## Classification Buckets (MVP v1)
+## Classification Buckets
 
 | Bucket | Trigger keywords |
 |---|---|
