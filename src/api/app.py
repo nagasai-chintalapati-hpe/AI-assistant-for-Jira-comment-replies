@@ -5,7 +5,7 @@ Approval endpoints for human-in-the-loop review.
 """
 
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException, Request, UploadFile, File
 from fastapi.responses import JSONResponse
 from pydantic import ValidationError
 import logging
@@ -24,6 +24,10 @@ from src.integrations.notifications import (
     EmailNotifier,
     NotificationService,
 )
+from src.config import settings
+
+import shutil
+from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
@@ -56,6 +60,28 @@ _email = EmailNotifier(
 )
 notifier = NotificationService(teams=_teams, email=_email)
 
+# RAG engine + ingester (lazy — initialised on first RAG endpoint call)
+_rag_engine = None
+_rag_ingester = None
+
+
+def _get_rag_engine():
+    """Lazy-initialise the RAG engine singleton."""
+    global _rag_engine
+    if _rag_engine is None:
+        from src.rag.engine import RAGEngine
+        _rag_engine = RAGEngine()
+    return _rag_engine
+
+
+def _get_rag_ingester():
+    """Lazy-initialise the document ingester singleton."""
+    global _rag_ingester
+    if _rag_ingester is None:
+        from src.rag.ingest import DocumentIngester
+        _rag_ingester = DocumentIngester(_get_rag_engine())
+    return _rag_ingester
+
 
 @asynccontextmanager
 async def lifespan(app_instance: FastAPI):
@@ -66,7 +92,7 @@ async def lifespan(app_instance: FastAPI):
     if _email.enabled:
         channels.append("Email")
     logger.info(
-        "Starting Jira Comment Assistant API (v0.4.0) — notifications: %s",
+        "Starting Jira Comment Assistant API (v0.5.0) — notifications: %s",
         ", ".join(channels) if channels else "none",
     )
     yield
@@ -75,7 +101,7 @@ async def lifespan(app_instance: FastAPI):
 app = FastAPI(
     title="Jira Comment Assistant",
     description="AI assistant for responding to Jira defect comments",
-    version="0.4.0",
+    version="0.5.0",
     lifespan=lifespan,
 )
 
@@ -86,7 +112,7 @@ async def health_check():
     return {
         "status": "healthy",
         "timestamp": datetime.now(timezone.utc).isoformat(),
-        "version": "0.4.0",
+        "version": "0.5.0",
         "drafts_in_store": len(draft_store),
         "notifications": {
             "teams": _teams.enabled,
@@ -320,6 +346,179 @@ async def reject_draft(request: Request):
     except Exception as e:
         logger.error("Error rejecting draft: %s", e)
         raise HTTPException(status_code=500, detail="Failed to reject draft")
+
+
+# ── RAG endpoints ─────────────────────────────────────────────────────
+
+@app.post("/rag/ingest/pdf")
+async def rag_ingest_pdf(file: UploadFile = File(...)):
+    """
+    Upload and ingest a PDF into the RAG index.
+
+    The file is saved to the configured PDF upload directory, parsed,
+    chunked, and indexed into ChromaDB.
+    """
+    if not file.filename or not file.filename.lower().endswith(".pdf"):
+        raise HTTPException(status_code=400, detail="Only .pdf files are accepted")
+
+    upload_dir = Path(settings.rag.pdf_upload_dir)
+    upload_dir.mkdir(parents=True, exist_ok=True)
+    dest = upload_dir / file.filename
+
+    try:
+        with open(dest, "wb") as f:
+            shutil.copyfileobj(file.file, f)
+
+        ingester = _get_rag_ingester()
+        count = ingester.ingest_pdf(str(dest), source_title=file.filename)
+
+        return {
+            "status": "ingested",
+            "filename": file.filename,
+            "chunks_indexed": count,
+        }
+    except Exception as exc:
+        logger.error("PDF ingestion failed: %s", exc)
+        raise HTTPException(status_code=500, detail=f"Ingestion failed: {exc}")
+
+
+@app.post("/rag/ingest/text")
+async def rag_ingest_text(request: Request):
+    """
+    Ingest raw text into the RAG index.
+
+    Payload: {"title": str, "text": str, "source_type": str, "url": str|null, "metadata": dict|null}
+    """
+    try:
+        payload = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON payload")
+
+    title = payload.get("title")
+    text = payload.get("text")
+    if not title or not text:
+        raise HTTPException(status_code=400, detail="'title' and 'text' are required")
+
+    source_type = payload.get("source_type", "text")
+    url = payload.get("url")
+    metadata = payload.get("metadata")
+
+    try:
+        ingester = _get_rag_ingester()
+        count = ingester.ingest_text(
+            text=text,
+            source_title=title,
+            source_type=source_type,
+            source_url=url,
+            metadata=metadata,
+        )
+        return {"status": "ingested", "title": title, "chunks_indexed": count}
+    except Exception as exc:
+        logger.error("Text ingestion failed: %s", exc)
+        raise HTTPException(status_code=500, detail=f"Ingestion failed: {exc}")
+
+
+@app.post("/rag/ingest/confluence")
+async def rag_ingest_confluence(request: Request):
+    """
+    Ingest one or more Confluence pages into the RAG index.
+
+    Payload: {"page_ids": [str]} or {"space_key": str, "label": str|null}
+    """
+    try:
+        payload = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON payload")
+
+    page_ids = payload.get("page_ids", [])
+    space_key = payload.get("space_key")
+    label = payload.get("label")
+
+    if not page_ids and not space_key:
+        raise HTTPException(
+            status_code=400,
+            detail="Provide 'page_ids' or 'space_key' to ingest",
+        )
+
+    from src.integrations.confluence import ConfluenceClient
+    conf_client = ConfluenceClient()
+    if not conf_client.enabled:
+        raise HTTPException(
+            status_code=503,
+            detail="Confluence is not configured (check env vars)",
+        )
+
+    ingester = _get_rag_ingester()
+    total_chunks = 0
+    pages_ingested = 0
+
+    # If space_key given, discover pages first
+    if space_key and not page_ids:
+        pages = conf_client.search_pages(space_key=space_key, label=label)
+        page_ids = [p["id"] for p in pages if p.get("id")]
+
+    for pid in page_ids:
+        try:
+            count = ingester.ingest_confluence_page(pid, confluence_client=conf_client)
+            total_chunks += count
+            if count > 0:
+                pages_ingested += 1
+        except Exception as exc:
+            logger.warning("Failed to ingest Confluence page %s: %s", pid, exc)
+
+    return {
+        "status": "ingested",
+        "pages_ingested": pages_ingested,
+        "total_chunks_indexed": total_chunks,
+    }
+
+
+@app.get("/rag/search")
+async def rag_search(q: str, top_k: int = 5, source_type: Optional[str] = None):
+    """
+    Search the RAG index for relevant document chunks.
+
+    Query params: ?q=search+text&top_k=5&source_type=confluence
+    """
+    if not q.strip():
+        raise HTTPException(status_code=400, detail="Query parameter 'q' is required")
+
+    engine = _get_rag_engine()
+    result = engine.query(text=q, top_k=top_k, source_type=source_type or None)
+
+    return {
+        "query": result.query,
+        "total_chunks_searched": result.total_chunks_searched,
+        "retrieval_duration_ms": result.retrieval_duration_ms,
+        "results": [
+            {
+                "chunk_id": s.chunk_id,
+                "source_type": s.source_type,
+                "source_title": s.source_title,
+                "source_url": s.source_url,
+                "content": s.content,
+                "relevance_score": s.relevance_score,
+            }
+            for s in result.snippets
+        ],
+    }
+
+
+@app.get("/rag/stats")
+async def rag_stats():
+    """Return RAG collection statistics."""
+    engine = _get_rag_engine()
+    return engine.stats()
+
+
+@app.delete("/rag/document/{source_title}")
+async def rag_delete_document(source_title: str):
+    """Remove all chunks for a given source document."""
+    engine = _get_rag_engine()
+    deleted = engine.delete_by_source(source_title)
+    if deleted == 0:
+        raise HTTPException(status_code=404, detail="No chunks found for this source")
+    return {"status": "deleted", "source_title": source_title, "chunks_deleted": deleted}
 
 
 if __name__ == "__main__":

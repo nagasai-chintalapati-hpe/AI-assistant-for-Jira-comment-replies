@@ -51,7 +51,7 @@ class JiraWebhookEvent(BaseModel):
     issue: Optional[WebhookIssue] = None
     comment: Optional[WebhookComment] = None
 
-    # ---- derived helpers ------------------------------------------------- #
+    # Derived helpers
 
     @property
     def event_id(self) -> str:
