@@ -189,7 +189,36 @@ curl http://localhost:8000/drafts
 curl -X POST http://localhost:8000/approve \
   -H "Content-Type: application/json" \
   -d '{"draft_id": "<DRAFT_ID>", "approved_by": "qa@company.com"}'
+
+# Ingest a text document into RAG
+curl -X POST http://localhost:8000/rag/ingest/text \
+  -H "Content-Type: application/json" \
+  -d '{"title": "Auth Runbook", "text": "Check SSO config when login fails...", "source_type": "runbook"}'
+
+# Search the RAG index
+curl "http://localhost:8000/rag/search?q=login+failure&top_k=3"
+
+# RAG collection stats
+curl http://localhost:8000/rag/stats
 ```
+
+## Optional: RAG Dependencies
+
+The RAG engine and document ingestion pipeline require additional packages
+that are **not** installed by default (they are only needed if you use the
+`/rag/*` endpoints):
+
+```bash
+pip install chromadb sentence-transformers pypdf
+```
+
+- **chromadb** — vector store for semantic retrieval
+- **sentence-transformers** — embedding model (`all-MiniLM-L6-v2`)
+- **pypdf** — PDF text extraction
+
+The core pipeline (webhook → classify → context → draft) works without
+these packages.  Tests mock all heavy dependencies so `pytest` runs
+without installing them.
 
 ## Troubleshooting
 
