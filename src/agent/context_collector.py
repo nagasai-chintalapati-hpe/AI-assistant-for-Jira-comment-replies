@@ -1,4 +1,4 @@
-"""Context collector – gathers full issue context for MVP v1.
+"""Context collector – gathers full issue context.
 
 Collects:
   • Issue fields (summary, description, environment, versions, components, labels)

@@ -1,10 +1,10 @@
 """Draft generator – creates responses using templates + Copilot SDK.
 
-MVP v1 flow:
+Flow:
   1. Select a response template based on the classification bucket.
   2. Fill the template with context (issue fields, evidence, citations).
   3. Optionally refine via Copilot SDK for natural language polish.
-  4. Return a Draft with citations and suggested actions.
+  4. Return a Draft with citations, evidence tracking, and suggested actions.
 """
 
 from __future__ import annotations
@@ -58,6 +58,40 @@ TEMPLATES: dict[CommentType, str] = {
         "**Fix version/commit/build:** {fix_version}\n\n"
         "**Focused retest checklist:**\n{retest_checklist}\n\n"
         "Please verify in **{target_env}** and update the ticket status."
+    ),
+    CommentType.DUPLICATE_FIXED: (
+        "This issue appears to be a **duplicate** or has already been "
+        "addressed.\n\n"
+        "**Related ticket:** {related_ticket}\n"
+        "**Status:** {related_status}\n\n"
+        "If the fix in the related ticket does not fully address your "
+        "scenario, please reopen with:\n"
+        "• Steps that still reproduce the issue\n"
+        "• Environment and build version\n"
+        "• How the behavior differs from the related fix\n\n"
+        "We’ll re-evaluate once we have those details."
+    ),
+    CommentType.BLOCKED_WAITING: (
+        "Understood — this is currently **blocked / waiting** on an "
+        "external dependency.\n\n"
+        "**Blocking item:** {blocking_item}\n"
+        "**Expected resolution:** {expected_resolution}\n\n"
+        "We’ll keep this ticket in its current state until the blocker "
+        "is resolved. In the meantime:\n"
+        "• Could you confirm the blocking ticket/dependency is still accurate?\n"
+        "• Is there a workaround we should document?\n\n"
+        "We’ll follow up once the dependency is cleared."
+    ),
+    CommentType.CONFIG_ISSUE: (
+        "Based on our investigation, this appears to be a "
+        "**configuration / setup issue** rather than a code defect.\n\n"
+        "**Expected configuration:** {expected_config}\n"
+        "**Reference:** {doc_link}\n\n"
+        "Could you verify:\n"
+        "• Your current configuration matches the documented setup?\n"
+        "• Any environment-specific overrides are correctly applied?\n\n"
+        "If the issue persists after correcting the configuration, please "
+        "provide updated logs and we’ll re-investigate."
     ),
 
     CommentType.OTHER: (
@@ -184,6 +218,11 @@ class ResponseDrafter:
             "fix_version": (ctx.versions[0] if ctx.versions else "N/A"),
             "retest_checklist": "1. Verify the reported scenario end-to-end",
             "target_env": ctx.environment or "staging",
+            "related_ticket": self._find_related_ticket(ctx),
+            "related_status": "See linked ticket",
+            "blocking_item": self._find_blocking_item(ctx),
+            "expected_resolution": "TBD – pending dependency update",
+            "expected_config": "See documentation",
         }
 
         try:
@@ -214,6 +253,23 @@ class ResponseDrafter:
         return "\n".join(f"• {item}" for item in classification.missing_context)
 
     @staticmethod
+    def _find_related_ticket(ctx) -> str:
+        """Extract the first linked issue key (for duplicate references)."""
+        if ctx.linked_issues:
+            return ctx.linked_issues[0].get("key", "N/A")
+        return "N/A"
+
+    @staticmethod
+    def _find_blocking_item(ctx) -> str:
+        """Extract the first blocking linked issue (for blocked/waiting)."""
+        if ctx.linked_issues:
+            for link in ctx.linked_issues:
+                if link.get("type", "").lower() in ("blocks", "is blocked by"):
+                    return link.get("key", "N/A")
+            return ctx.linked_issues[0].get("key", "N/A")
+        return "N/A – please specify the blocking issue"
+
+    @staticmethod
     def _build_citations(context: ContextCollectionResult) -> list[dict[str, str]]:
         """Build citation list from Jenkins links and other sources."""
         citations: list[dict[str, str]] = []
@@ -234,6 +290,13 @@ class ResponseDrafter:
             actions.append({"action": "transition", "value": "Ready for QA"})
         elif ctype == CommentType.CANNOT_REPRODUCE:
             actions.append({"action": "request_info", "value": "environment"})
+        elif ctype == CommentType.DUPLICATE_FIXED:
+            actions.append({"action": "transition", "value": "Closed"})
+            actions.append({"action": "link_issue", "value": "duplicate"})
+        elif ctype == CommentType.BLOCKED_WAITING:
+            actions.append({"action": "transition", "value": "Blocked"})
+        elif ctype == CommentType.CONFIG_ISSUE:
+            actions.append({"action": "add_label", "value": "config-issue"})
 
         return actions
 
@@ -249,6 +312,9 @@ class ResponseDrafter:
             CommentType.CANNOT_REPRODUCE: "cannot-reproduce",
             CommentType.FIXED_VALIDATE: "fixed-validate",
             CommentType.BY_DESIGN: "by-design",
+            CommentType.DUPLICATE_FIXED: "duplicate",
+            CommentType.BLOCKED_WAITING: "blocked",
+            CommentType.CONFIG_ISSUE: "config-issue",
         }
         if classification.comment_type in label_map:
             labels.append(label_map[classification.comment_type])

@@ -1,6 +1,6 @@
 """Notification integrations — Teams webhook + Email (SMTP).
 
-MVP v1 sends a summary card / email when:
+Sends a summary card / email when:
   • A new draft is generated  (notify_draft_generated)
   • A draft is approved       (notify_draft_approved)
   • A draft is rejected       (notify_draft_rejected)

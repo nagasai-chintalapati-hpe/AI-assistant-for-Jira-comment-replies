@@ -1,4 +1,4 @@
-"""Jira Cloud integration – full issue + comment retrieval for MVP v1.
+"""Jira Cloud integration – full issue + comment retrieval.
 
 Provides:
   • get_issue          – full issue JSON
@@ -165,7 +165,7 @@ class JiraClient:
     def detect_jenkins_links(self, issue_key: str) -> list[str]:
         """
         Scan the issue description, comments, and remote-links for
-        Jenkins console URLs (heuristic for MVP v1).
+        Jenkins console URLs.
         """
         urls: list[str] = []
         try:

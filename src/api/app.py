@@ -37,7 +37,7 @@ _COPILOT_MODEL: str = os.getenv("COPILOT_MODEL", "gpt-4")
 classifier = CommentClassifier(api_key=_COPILOT_API_KEY, model=_COPILOT_MODEL)
 drafter = ResponseDrafter(api_key=_COPILOT_API_KEY, model=_COPILOT_MODEL)
 
-# In-memory draft store (MVP v1)
+# In-memory draft store
 draft_store: dict[str, dict] = {}
 
 # Notification service (optional — disabled when env vars are empty)
@@ -147,7 +147,7 @@ async def jira_webhook(request: Request):
 
 async def handle_comment_event(event: JiraWebhookEvent):
     """
-    Full MVP v1 pipeline:
+    Full pipeline:
       Comment → Classify → Context → Draft → Store
     """
     assert event.comment is not None
