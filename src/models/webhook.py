@@ -44,7 +44,7 @@ class JiraWebhookEvent(BaseModel):
     Top-level Jira webhook event payload.
 
     Jira sends different shapes depending on the event type.
-    We normalise the pieces we care about for MVP v1.
+    We normalise the pieces we care about.
     """
     webhookEvent: str
     timestamp: Optional[int] = None

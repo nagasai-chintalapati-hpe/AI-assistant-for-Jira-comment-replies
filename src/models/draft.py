@@ -31,7 +31,13 @@ class Draft(BaseModel):
     
     # Evidence tracking
     citations: Optional[list[dict[str, str]]] = None  # {source, url, excerpt}
-    
+    evidence_used: Optional[list[str]] = None  # list of source descriptions used
+    missing_info: Optional[list[str]] = None  # what info is still needed
+
+    # Classification tracking
+    classification_type: Optional[str] = None
+    classification_reasoning: Optional[str] = None
+
     # Approval tracking
     status: DraftStatus = DraftStatus.GENERATED
     approved_by: Optional[str] = None

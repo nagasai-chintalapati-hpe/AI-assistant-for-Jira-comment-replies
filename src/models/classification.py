@@ -6,12 +6,15 @@ from pydantic import BaseModel, ConfigDict
 
 
 class CommentType(str, Enum):
-    """MVP v1 classification buckets."""
+    """Classification buckets for developer comments on defect tickets."""
 
     CANNOT_REPRODUCE = "cannot_reproduce"   # Cannot Repro
     NEED_MORE_INFO = "need_more_info"       # Need Info / Logs
     FIXED_VALIDATE = "fixed_validate"       # Fixed — Validate
     BY_DESIGN = "by_design"                 # By Design
+    DUPLICATE_FIXED = "duplicate_fixed"     # Duplicate / Already fixed in X
+    BLOCKED_WAITING = "blocked_waiting"     # Blocked by dependency / Waiting for X
+    CONFIG_ISSUE = "config_issue"           # Not a bug / Configuration issue
     OTHER = "other"                         # Fallback
 
 

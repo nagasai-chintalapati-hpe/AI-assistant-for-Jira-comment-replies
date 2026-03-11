@@ -1,12 +1,15 @@
-"""Context collection data models – MVP v1.
+"""Context collection data models.
 
-Captures all issue metadata, comment thread, attachments, and
-Jenkins console-log links gathered by the ContextCollector.
+Captures all issue metadata, comment thread, attachments,
+Jenkins console-log links, RAG snippets, and log entries
+gathered by the ContextCollector.
 """
 
 from datetime import datetime
 from typing import Optional, Any
 from pydantic import BaseModel
+
+from src.models.rag import RAGSnippet, LogEntry
 
 
 class CommentSnapshot(BaseModel):
@@ -50,5 +53,11 @@ class ContextCollectionResult(BaseModel):
 
     issue_context: IssueContext
     jenkins_links: Optional[list[str]] = None
+
+    rag_snippets: Optional[list[RAGSnippet]] = None
+    log_entries: Optional[list[LogEntry]] = None
+    testrail_results: Optional[list[dict[str, Any]]] = None
+    build_metadata: Optional[dict[str, str]] = None  # commit, version, deploy_ts
+
     collection_timestamp: datetime
     collection_duration_ms: float
