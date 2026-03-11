@@ -1,7 +1,7 @@
 """
 Webhook event filtering and validation.
 
-Applies the MVP v1 gate rules described in the architecture doc:
+Applies the gate rules described in the architecture doc:
   • Issue type must be Bug / Defect
   • Issue status in an allowed set (In Progress, Ready for QA, Reopened, Open)
   • Comment author should belong to the developer group OR trigger
@@ -53,6 +53,19 @@ TRIGGER_KEYWORDS: list[str] = [
     "fix deployed",
     "please validate",
     "please verify",
+    "duplicate",
+    "duplicate of",
+    "same as",
+    "known issue",
+    "blocked by",
+    "waiting for",
+    "depends on",
+    "blocked on",
+    "configuration issue",
+    "config issue",
+    "not a bug",
+    "misconfigured",
+    "setup issue",
 ]
 
 
@@ -140,7 +153,7 @@ class EventFilter:
         """
         Return True when the comment should be processed.
 
-        For MVP v1 we use keyword matching against the comment body as
+        Uses keyword matching against the comment body as
         a proxy for "comment author belongs to the developer group".
         """
         if event.comment is None:

@@ -1,14 +1,17 @@
 """Comment classifier – determines comment intent.
 
-MVP v1 strategy:
+Strategy:
   1. Try Copilot SDK for structured classification.
   2. Fall back to keyword heuristics if the Copilot SDK is unavailable or low-confidence.
 
-Classification buckets (MVP v1):
+Classification buckets:
   • Cannot Repro
   • Need Info / Logs
   • Fixed — Validate
   • By Design
+  • Duplicate / Already Fixed
+  • Blocked / Waiting
+  • Configuration Issue
   • Other (fallback)
 """
 
@@ -58,6 +61,28 @@ _KEYWORD_RULES: list[tuple[list[str], CommentType, str, list[str]]] = [
         "Comment suggests this is expected / by-design behavior",
         [],
     ),
+    (
+        ["duplicate", "already fixed", "fixed in previous", "same as",
+         "duplicate of", "dup of", "already reported", "known issue"],
+        CommentType.DUPLICATE_FIXED,
+        "Comment indicates this is a duplicate or already fixed in another ticket",
+        [],
+    ),
+    (
+        ["blocked by", "waiting for", "depends on", "dependency",
+         "blocked on", "waiting on", "upstream", "pending"],
+        CommentType.BLOCKED_WAITING,
+        "Comment indicates work is blocked by a dependency or waiting for external input",
+        ["Blocking issue key", "Expected resolution timeline"],
+    ),
+    (
+        ["configuration issue", "config issue", "misconfigured", "misconfiguration",
+         "not a bug", "setup issue", "wrong config", "config error",
+         "environment setup", "user error"],
+        CommentType.CONFIG_ISSUE,
+        "Comment suggests this is a configuration or setup issue, not a code defect",
+        ["Correct configuration steps", "Documentation reference"],
+    ),
 ]
 
 # Copilot SDK classification prompt
@@ -66,7 +91,14 @@ _COPILOT_SYSTEM_PROMPT = """\
 You are a Jira comment classifier for a QA team. Given a developer comment on a
 bug ticket, classify it into exactly ONE of these categories:
 
-  cannot_reproduce, need_more_info, fixed_validate, by_design, other
+  cannot_reproduce    – Developer says they cannot reproduce the issue
+  need_more_info      – Comment requests logs, environment details, or other info
+  fixed_validate      – A fix is ready and needs validation / retesting
+  by_design           – Behavior is by design / expected / as specified
+  duplicate_fixed     – Issue is a duplicate or was already fixed in another ticket
+  blocked_waiting     – Work is blocked by a dependency or waiting for something
+  config_issue        – Not a code bug; it’s a configuration / setup issue
+  other               – Does not clearly fit any of the above
 
 Respond ONLY with valid JSON – no markdown, no explanation:
 {
@@ -200,6 +232,18 @@ class CommentClassifier:
             CommentType.FIXED_VALIDATE: [
                 "Which build/version contains the fix?",
                 "What are the focused retest steps?",
+            ],
+            CommentType.DUPLICATE_FIXED: [
+                "Which ticket is this a duplicate of?",
+                "Which version/build contains the fix?",
+            ],
+            CommentType.BLOCKED_WAITING: [
+                "Which issue/dependency is blocking this?",
+                "What is the expected timeline for resolution?",
+            ],
+            CommentType.CONFIG_ISSUE: [
+                "What is the correct configuration?",
+                "Is there documentation for the expected setup?",
             ],
         }
         return mapping.get(ctype)
