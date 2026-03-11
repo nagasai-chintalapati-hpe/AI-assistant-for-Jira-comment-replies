@@ -54,7 +54,7 @@ def _webhook_payload(
     }
 
 
-# ---- health check ------------------------------------------------------ #
+# Health check
 
 class TestHealthCheck:
     def test_health(self):
@@ -65,7 +65,7 @@ class TestHealthCheck:
         assert "version" in data
 
 
-# ---- webhook endpoint -------------------------------------------------- #
+# Webhook endpoint
 
 class TestWebhookEndpoint:
     def test_accepted_event_returns_processed(self):
@@ -121,7 +121,7 @@ class TestWebhookEndpoint:
         assert data["classification"] == "fixed_validate"
 
 
-# ---- draft store ------------------------------------------------------- #
+# Draft store
 
 class TestDraftStore:
     def test_draft_stored_after_processing(self):
@@ -155,7 +155,7 @@ class TestDraftStore:
         assert resp2.json()["count"] == 0
 
 
-# ---- approval ---------------------------------------------------------- #
+# Approval
 
 class TestApproval:
     def test_approve_draft(self):
