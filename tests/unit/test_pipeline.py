@@ -126,7 +126,7 @@ class TestWebhookEndpoint:
 class TestDraftStore:
     def test_draft_stored_after_processing(self):
         client.post("/webhook/jira", json=_webhook_payload())
-        assert len(draft_store) == 1
+        assert draft_store.count() == 1
 
     def test_get_draft_by_id(self):
         resp = client.post("/webhook/jira", json=_webhook_payload())
@@ -168,7 +168,8 @@ class TestApproval:
         )
         assert approve_resp.status_code == 200
         assert approve_resp.json()["status"] == "approved"
-        assert draft_store[draft_id]["status"] == "approved"
+        stored = draft_store.get(draft_id)
+        assert stored["status"] == "approved"
 
     def test_approve_nonexistent_draft(self):
         resp = client.post(
@@ -187,7 +188,8 @@ class TestApproval:
         )
         assert reject_resp.status_code == 200
         assert reject_resp.json()["status"] == "rejected"
-        assert draft_store[draft_id]["status"] == "rejected"
+        stored = draft_store.get(draft_id)
+        assert stored["status"] == "rejected"
 
     def test_reject_nonexistent_draft(self):
         resp = client.post(

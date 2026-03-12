@@ -174,3 +174,17 @@ class TestDelete:
 
     def test_delete_nonexistent_returns_false(self, store):
         assert store.delete("draft_999") is False
+
+
+# Clear
+
+class TestClear:
+    def test_clear_removes_all(self, store, sample_draft, second_draft):
+        store.save(sample_draft)
+        store.save(second_draft)
+        removed = store.clear()
+        assert removed == 2
+        assert store.count() == 0
+
+    def test_clear_empty_store(self, store):
+        assert store.clear() == 0

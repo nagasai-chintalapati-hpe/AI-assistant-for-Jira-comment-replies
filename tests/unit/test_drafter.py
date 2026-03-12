@@ -6,6 +6,7 @@ from src.models.comment import Comment
 from src.models.classification import CommentClassification, CommentType
 from src.models.context import IssueContext, ContextCollectionResult
 from src.models.draft import DraftStatus
+from src.models.rag import RAGSnippet, LogEntry
 from src.agent.drafter import ResponseDrafter, TEMPLATES
 
 
@@ -116,3 +117,189 @@ class TestTemplatesExist:
     def test_all_types_have_templates(self):
         for ctype in CommentType:
             assert ctype in TEMPLATES, f"Missing template for {ctype}"
+
+
+# ---- Evidence-enriched context helpers --------------------------------- #
+
+def _make_enriched_context(
+    log_entries=None, testrail_results=None, build_metadata=None,
+    rag_snippets=None, jenkins_links=None,
+):
+    """Build a ContextCollectionResult with Phase 3 fields populated."""
+    issue_context = IssueContext(
+        issue_key="DEFECT-300",
+        summary="API timeout on staging",
+        description="POST /api/data returns 504",
+        issue_type="Bug",
+        status="In Progress",
+        priority="High",
+        environment="Staging, k8s v1.28",
+        versions=["2.3.0"],
+        components=["API Gateway"],
+    )
+    return ContextCollectionResult(
+        issue_context=issue_context,
+        collection_timestamp=datetime.now(timezone.utc),
+        collection_duration_ms=200.0,
+        log_entries=log_entries,
+        testrail_results=testrail_results,
+        build_metadata=build_metadata,
+        rag_snippets=rag_snippets,
+        jenkins_links=jenkins_links,
+    )
+
+
+class TestDrafterWithLogEntries:
+    def test_log_entries_in_evidence(self, drafter, sample_comment):
+        entries = [
+            LogEntry(
+                source="jenkins",
+                message="ERROR: Connection timeout to DB at 10:30:12",
+                level="ERROR",
+                correlation_id="req-abc123",
+            ),
+        ]
+        ctx = _make_enriched_context(log_entries=entries)
+        classification = _make_classification(CommentType.NEED_MORE_INFO)
+        draft = drafter.draft(sample_comment, classification, ctx)
+
+        assert draft.evidence_used is not None
+        assert any("Log" in e for e in draft.evidence_used)
+        assert any("Log" in c["source"] for c in draft.citations)
+
+    def test_log_preview_in_body(self, drafter, sample_comment):
+        entries = [
+            LogEntry(
+                source="jenkins",
+                message="java.lang.NullPointerException at MainService.run",
+                level="ERROR",
+            ),
+        ]
+        ctx = _make_enriched_context(log_entries=entries)
+        classification = _make_classification(CommentType.NEED_MORE_INFO)
+        draft = drafter.draft(sample_comment, classification, ctx)
+
+        # The evidence section in body should mention the log
+        assert "Log" in draft.body or "jenkins" in draft.body.lower()
+
+
+class TestDrafterWithTestRailResults:
+    def test_testrail_in_evidence(self, drafter, sample_comment):
+        tr_results = [
+            {
+                "name": "Sprint 42 Regression",
+                "pass_rate": 94.5,
+                "failed": 3,
+                "url": "https://testrail.co/runs/100",
+                "failed_tests": [
+                    {"title": "Upload test"},
+                    {"title": "Login test"},
+                ],
+            },
+        ]
+        ctx = _make_enriched_context(testrail_results=tr_results)
+        classification = _make_classification(CommentType.NEED_MORE_INFO)
+        draft = drafter.draft(sample_comment, classification, ctx)
+
+        assert draft.evidence_used is not None
+        assert any("TestRail" in e for e in draft.evidence_used)
+        assert any("TestRail" in c["source"] for c in draft.citations)
+
+    def test_testrail_in_body(self, drafter, sample_comment):
+        tr_results = [
+            {"name": "Smoke Tests", "pass_rate": 100, "failed": 0},
+        ]
+        ctx = _make_enriched_context(testrail_results=tr_results)
+        classification = _make_classification(CommentType.NEED_MORE_INFO)
+        draft = drafter.draft(sample_comment, classification, ctx)
+
+        assert "TestRail" in draft.body
+
+
+class TestDrafterWithBuildMetadata:
+    def test_build_version_from_metadata(self, drafter, sample_comment):
+        bm = {"commit": "abc1234", "version": "2.5.0-rc1"}
+        ctx = _make_enriched_context(build_metadata=bm)
+        classification = _make_classification(CommentType.FIXED_VALIDATE)
+        draft = drafter.draft(sample_comment, classification, ctx)
+
+        # Build version should come from metadata, not issue versions
+        assert "2.5.0-rc1" in draft.body
+
+    def test_build_metadata_in_evidence_used(self, drafter, sample_comment):
+        bm = {"commit": "abc1234", "version": "2.5.0"}
+        ctx = _make_enriched_context(build_metadata=bm)
+        classification = _make_classification(CommentType.FIXED_VALIDATE)
+        draft = drafter.draft(sample_comment, classification, ctx)
+
+        assert draft.evidence_used is not None
+        assert any("Build" in e for e in draft.evidence_used)
+
+
+class TestDrafterRetestChecklist:
+    def test_retest_checklist_includes_failed_tests(self, drafter, sample_comment):
+        tr_results = [
+            {
+                "name": "Regression Suite",
+                "pass_rate": 90,
+                "failed": 2,
+                "failed_tests": [
+                    {"title": "Upload large file"},
+                    {"title": "Delete expired session"},
+                ],
+            },
+        ]
+        bm = {"version": "2.5.0"}
+        ctx = _make_enriched_context(testrail_results=tr_results, build_metadata=bm)
+        classification = _make_classification(CommentType.FIXED_VALIDATE)
+        draft = drafter.draft(sample_comment, classification, ctx)
+
+        assert "Upload large file" in draft.body
+        assert "2.5.0" in draft.body
+
+    def test_retest_checklist_default_when_no_testrail(self, drafter, sample_comment):
+        ctx = _make_enriched_context()
+        classification = _make_classification(CommentType.FIXED_VALIDATE)
+        draft = drafter.draft(sample_comment, classification, ctx)
+
+        assert "Verify the reported scenario" in draft.body
+
+
+class TestDrafterCombinedSources:
+    def test_all_sources_combined(self, drafter, sample_comment):
+        """Log, TestRail, build metadata, Jenkins, and RAG all present."""
+        log_entries = [
+            LogEntry(source="jenkins", message="Build FAILED", level="ERROR"),
+        ]
+        tr_results = [
+            {"name": "Run 50", "pass_rate": 80, "failed": 5},
+        ]
+        bm = {"commit": "def5678", "version": "3.0.0"}
+        jenkins_links = ["https://jenkins.co/job/main/50/consoleFull"]
+        rag_snippets = [
+            RAGSnippet(
+                chunk_id="c1",
+                source_type="confluence",
+                source_title="Troubleshooting Guide",
+                content="Check the API gateway logs for timeout errors",
+                relevance_score=0.85,
+            ),
+        ]
+        ctx = _make_enriched_context(
+            log_entries=log_entries,
+            testrail_results=tr_results,
+            build_metadata=bm,
+            jenkins_links=jenkins_links,
+            rag_snippets=rag_snippets,
+        )
+        classification = _make_classification(CommentType.NEED_MORE_INFO)
+        draft = drafter.draft(sample_comment, classification, ctx)
+
+        # Should have evidence from all sources
+        assert draft.evidence_used is not None
+        sources = " ".join(draft.evidence_used)
+        assert "Jenkins" in sources
+        assert "Log" in sources
+        assert "TestRail" in sources
+        assert "Build" in sources
+        assert "Confluence" in sources or "Troubleshooting" in sources
