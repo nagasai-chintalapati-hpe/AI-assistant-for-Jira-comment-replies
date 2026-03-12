@@ -217,6 +217,30 @@ class SQLiteDraftStore:
         self._conn.commit()
         return True
 
+    def update_body(self, draft_id: str, body: str) -> bool:
+        """Update the draft body (human-edited text).  Returns True if found."""
+        result = self._conn.execute(
+            "UPDATE drafts SET body = ? WHERE draft_id = ?",
+            (body, draft_id),
+        )
+        if result.rowcount == 0:
+            return False
+
+        row = self._conn.execute(
+            "SELECT data_json FROM drafts WHERE draft_id = ?", (draft_id,)
+        ).fetchone()
+        if row:
+            data = json.loads(row["data_json"])
+            data["body"] = body
+            self._conn.execute(
+                "UPDATE drafts SET data_json = ? WHERE draft_id = ?",
+                (json.dumps(data), draft_id),
+            )
+
+        self._conn.commit()
+        logger.debug("Updated body for draft %s", draft_id)
+        return True
+
     def delete(self, draft_id: str) -> bool:
         """Delete a draft.  Returns True if it existed."""
         result = self._conn.execute(
