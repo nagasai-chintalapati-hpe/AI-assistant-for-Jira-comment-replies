@@ -28,6 +28,7 @@ from src.storage.sqlite_store import SQLiteDraftStore
 from src.integrations.log_lookup import LogLookupService
 from src.integrations.testrail import TestRailClient
 from src.integrations.jira import JiraClient
+from src.integrations.git import GitClient
 from src.config import settings
 
 import shutil
@@ -51,6 +52,15 @@ draft_store = SQLiteDraftStore(db_path=settings.app.db_path)
 # Log Lookup + TestRail (optional — gracefully disabled when unconfigured)
 _log_lookup = LogLookupService()
 _testrail_client = TestRailClient()
+
+# Git client disabled when GIT_TOKEN not set
+_git_client: Optional[GitClient] = None
+try:
+    _git_client = GitClient()
+    if not _git_client.enabled:
+        _git_client = None
+except Exception:
+    _git_client = None
 
 # Jira client for posting approved drafts
 _jira_client: Optional[JiraClient] = None
@@ -107,7 +117,7 @@ async def lifespan(app_instance: FastAPI):
     if _email.enabled:
         channels.append("Email")
     logger.info(
-        "Starting Jira Comment Assistant API (v0.5.0) — notifications: %s",
+        "Starting Jira Comment Assistant API (v0.6.0) — notifications: %s",
         ", ".join(channels) if channels else "none",
     )
     yield
@@ -116,7 +126,7 @@ async def lifespan(app_instance: FastAPI):
 app = FastAPI(
     title="Jira Comment Assistant",
     description="AI assistant for responding to Jira defect comments",
-    version="0.5.0",
+    version="0.6.0",
     lifespan=lifespan,
 )
 
@@ -127,11 +137,17 @@ async def health_check():
     return {
         "status": "healthy",
         "timestamp": datetime.now(timezone.utc).isoformat(),
-        "version": "0.5.0",
+        "version": "0.6.0",
         "drafts_in_store": draft_store.count(),
         "notifications": {
             "teams": _teams.enabled,
             "email": _email.enabled,
+        },
+        "integrations": {
+            "git": _git_client is not None,
+            "elk": _log_lookup.elk_enabled,
+            "testrail": _testrail_client.enabled,
+            "rag": _rag_engine is not None,
         },
     }
 
@@ -260,6 +276,7 @@ def _collect_context_safe(issue_key: str):
         collector = ContextCollector(
             log_lookup=_log_lookup,
             testrail_client=_testrail_client,
+            git_client=_git_client,
         )
         return collector.collect(issue_key)
     except Exception as exc:
