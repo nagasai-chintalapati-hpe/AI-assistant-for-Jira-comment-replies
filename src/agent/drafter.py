@@ -21,7 +21,7 @@ from src.models.draft import Draft, DraftStatus
 
 logger = logging.getLogger(__name__)
 
-#  Response templates – one per classification bucket 
+# Response templates — one per classification bucket
 TEMPLATES: dict[CommentType, str] = {
     CommentType.CANNOT_REPRODUCE: (
         "Thanks for the update. We were able to reproduce on "
@@ -100,8 +100,7 @@ TEMPLATES: dict[CommentType, str] = {
         "**Issue:** {issue_key} – {summary}"
     ),
 }
-#  Copilot SDK refinement prompt 
-
+# Copilot SDK refinement prompt
 _REFINE_SYSTEM = """\
 You are a QA engineer writing a reply to a developer comment on a Jira defect.
 Rewrite the DRAFT below so it sounds professional, concise, and empathetic.
@@ -125,7 +124,7 @@ class ResponseDrafter:
             except Exception as exc:
                 logger.warning("Could not initialise Copilot SDK drafter: %s", exc)
 
-    #  Public API                                                         #
+    # Public API
     def draft(
         self,
         comment: Comment,
@@ -168,7 +167,7 @@ class ResponseDrafter:
             classification_reasoning=classification.reasoning,
         )
 
-    #  Copilot SDK refinement     
+    # Copilot SDK refinement
     def _refine_with_copilot(self, draft_text: str, comment: Comment) -> Optional[str]:
         """Optionally polish the template-filled draft with Copilot SDK."""
         try:
@@ -194,7 +193,7 @@ class ResponseDrafter:
             logger.warning("Copilot SDK refinement failed: %s", exc)
             return None
     
-    #  Template filling                                                
+    # Template filling
     def _fill_template(
         self,
         comment: Comment,
@@ -207,11 +206,12 @@ class ResponseDrafter:
         template = TEMPLATES.get(classification.comment_type, TEMPLATES[CommentType.OTHER])
 
         # Build a safe substitution dict with fallbacks
+        bm = context.build_metadata or {}
         subs: dict[str, str] = {
             "issue_key": ctx.issue_key,
             "summary": ctx.summary,
             "environment": ctx.environment or "N/A",
-            "build_version": (ctx.versions[0] if ctx.versions else "N/A"),
+            "build_version": bm.get("version") or (ctx.versions[0] if ctx.versions else "N/A"),
             "observation": "See attached evidence",
             "repro_steps": "1. (auto-detected from ticket – please verify)",
             "feature_flag": "N/A",
@@ -221,8 +221,8 @@ class ResponseDrafter:
             "missing_items": self._format_missing(classification),
             "doc_link": "N/A",
             "expected_behavior": "See referenced documentation",
-            "fix_version": (ctx.versions[0] if ctx.versions else "N/A"),
-            "retest_checklist": "1. Verify the reported scenario end-to-end",
+            "fix_version": bm.get("version") or (ctx.versions[0] if ctx.versions else "N/A"),
+            "retest_checklist": self._build_retest_checklist(context),
             "target_env": ctx.environment or "staging",
             "related_ticket": self._find_related_ticket(ctx),
             "related_status": "See linked ticket",
@@ -237,10 +237,10 @@ class ResponseDrafter:
             logger.warning("Template substitution key missing: %s", exc)
             return template  # return raw template on failure
 
-    #  Evidence & citation helpers   
+    # Evidence and citations
     @staticmethod
     def _format_existing_evidence(context: ContextCollectionResult) -> str:
-        """Format attachments, Jenkins links, and RAG snippets as bullet list."""
+        """Format attachments, Jenkins links, RAG snippets, logs, and TestRail as bullet list."""
         lines: list[str] = []
         if context.issue_context.attached_files:
             for att in context.issue_context.attached_files[:5]:
@@ -255,6 +255,16 @@ class ResponseDrafter:
                 score = f"{snippet.relevance_score:.0%}"
                 preview = snippet.content[:120].replace("\n", " ")
                 lines.append(f"• [{source}] ({score}): {preview}…")
+        if context.log_entries:
+            for entry in context.log_entries[:3]:
+                preview = entry.message[:100].replace("\n", " ")
+                lines.append(f"• Log ({entry.source}): {preview}…")
+        if context.testrail_results:
+            for tr in context.testrail_results[:2]:
+                name = tr.get("name", "run")
+                rate = tr.get("pass_rate", 0)
+                failed = tr.get("failed", 0)
+                lines.append(f"• TestRail [{name}]: {rate}% pass, {failed} failed")
         return "\n".join(lines) if lines else "• (none collected yet)"
 
     @staticmethod
@@ -263,6 +273,23 @@ class ResponseDrafter:
         if not classification.missing_context:
             return "• (nothing flagged)"
         return "\n".join(f"• {item}" for item in classification.missing_context)
+
+    @staticmethod
+    def _build_retest_checklist(context: ContextCollectionResult) -> str:
+        """Build a retest checklist from TestRail results and build metadata."""
+        lines: list[str] = []
+        lines.append("1. Verify the reported scenario end-to-end")
+        if context.testrail_results:
+            for tr in context.testrail_results[:1]:
+                failed_tests = tr.get("failed_tests", [])
+                for i, t in enumerate(failed_tests[:3], start=2):
+                    name = t.get("title") or t.get("name", "test case")
+                    lines.append(f"{i}. Re-run: {name}")
+        if context.build_metadata:
+            bm = context.build_metadata
+            if bm.get("version"):
+                lines.append(f"{len(lines) + 1}. Confirm fix on build {bm['version']}")
+        return "\n".join(lines)
 
     @staticmethod
     def _find_related_ticket(ctx) -> str:
@@ -283,7 +310,7 @@ class ResponseDrafter:
 
     @staticmethod
     def _build_citations(context: ContextCollectionResult) -> list[dict[str, str]]:
-        """Build citation list from Jenkins links, RAG snippets, and other sources."""
+        """Build citation list from Jenkins links, RAG snippets, logs, and TestRail."""
         citations: list[dict[str, str]] = []
         if context.jenkins_links:
             for url in context.jenkins_links:
@@ -298,6 +325,19 @@ class ResponseDrafter:
                     citation["url"] = snippet.source_url
                 citation["excerpt"] = snippet.content[:200]
                 citations.append(citation)
+        if context.log_entries:
+            for entry in context.log_entries[:5]:
+                citations.append({
+                    "source": f"Log ({entry.source})",
+                    "excerpt": entry.message[:200],
+                })
+        if context.testrail_results:
+            for tr in context.testrail_results:
+                citations.append({
+                    "source": f"TestRail: {tr.get('name', 'run')}",
+                    "url": tr.get("url", ""),
+                    "excerpt": f"{tr.get('pass_rate', 0)}% pass, {tr.get('failed', 0)} failed",
+                })
         return citations
 
     @staticmethod
@@ -313,6 +353,25 @@ class ResponseDrafter:
                 if snippet.relevance_score >= 0.5:
                     label += f" (relevance: {snippet.relevance_score:.0%})"
                 evidence.append(label)
+        if context.log_entries:
+            for entry in context.log_entries[:5]:
+                cid = entry.correlation_id or entry.source
+                evidence.append(f"Log ({entry.source}): {cid}")
+        if context.testrail_results:
+            for tr in context.testrail_results:
+                evidence.append(
+                    f"TestRail run: {tr.get('name', 'unknown')} "
+                    f"({tr.get('pass_rate', 0)}% pass)"
+                )
+        if context.build_metadata:
+            bm = context.build_metadata
+            parts = []
+            if bm.get("commit"):
+                parts.append(f"commit {bm['commit']}")
+            if bm.get("version"):
+                parts.append(bm["version"])
+            if parts:
+                evidence.append(f"Build: {', '.join(parts)}")
         return evidence
 
     # Suggested labels & actions
