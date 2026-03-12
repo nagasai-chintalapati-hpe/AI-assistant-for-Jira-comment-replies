@@ -11,12 +11,15 @@ Architecture flow (matches high-level design):
         └─ Draft Store    (SQLiteDraftStore)
     → Approval Service   (POST /approve, POST /reject)
     → Action Executor    (post comment to Jira on approval)
+    → Draft Review UI    (GET /ui, GET /ui/drafts/{id}, POST approve/reject)
     → RAG Pipeline       (POST /rag/ingest/*, GET /rag/search)
 """
 
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, HTTPException, Request, UploadFile, File
-from fastapi.responses import JSONResponse
+from fastapi import FastAPI, Form, HTTPException, Request, UploadFile, File
+from fastapi.responses import JSONResponse, RedirectResponse
+from fastapi.staticfiles import StaticFiles
+from fastapi.templating import Jinja2Templates
 from pydantic import ValidationError
 import logging
 import os
@@ -137,6 +140,15 @@ app = FastAPI(
     version="0.6.0",
     lifespan=lifespan,
 )
+
+# Draft Review UI — static assets and Jinja2 templates
+_ui_dir = Path(__file__).parent
+app.mount(
+    "/static",
+    StaticFiles(directory=_ui_dir / "static"),
+    name="static",
+)
+_templates = Jinja2Templates(directory=str(_ui_dir / "templates"))
 
 
 @app.get("/health")
@@ -602,6 +614,93 @@ async def rag_delete_document(source_title: str):
     if deleted == 0:
         raise HTTPException(status_code=404, detail="No chunks found for this source")
     return {"status": "deleted", "source_title": source_title, "chunks_deleted": deleted}
+
+
+# Draft Review UI
+
+@app.get("/ui")
+async def ui_list(
+    request: Request,
+    issue_key: Optional[str] = None,
+    status: Optional[str] = None,
+):
+    """Draft list page — shows all stored drafts with optional filters."""
+    drafts = draft_store.list_all(issue_key=issue_key, status=status, limit=100)
+    total = draft_store.count(issue_key=issue_key, status=status)
+    return _templates.TemplateResponse(
+        request,
+        "drafts.html",
+        {
+            "drafts": drafts,
+            "total": total,
+            "filters": {"issue_key": issue_key, "status": status},
+        },
+    )
+
+
+@app.get("/ui/drafts/{draft_id}")
+async def ui_review(request: Request, draft_id: str):
+    """Draft review page — shows full draft with evidence panel and approve/reject actions."""
+    draft = draft_store.get(draft_id)
+    if draft is None:
+        raise HTTPException(status_code=404, detail="Draft not found")
+
+    jira_url = f"{settings.jira.base_url}/browse/{draft.get('issue_key', '')}"
+    missing_context: list[str] = draft.get("missing_info") or []
+
+    return _templates.TemplateResponse(
+        request,
+        "draft_review.html",
+        {
+            "draft": draft,
+            "jira_url": jira_url,
+            "missing_context": missing_context,
+        },
+    )
+
+
+@app.post("/ui/drafts/{draft_id}/approve")
+async def ui_approve(
+    request: Request,
+    draft_id: str,
+    body: Optional[str] = Form(default=None),
+):
+    """Handle approve form submission — optionally update body, then approve and post to Jira."""
+    draft_data = draft_store.get(draft_id)
+    if draft_data is None:
+        raise HTTPException(status_code=404, detail="Draft not found")
+
+    # Persist edited body if the human changed it
+    effective_body = body.strip() if body and body.strip() else draft_data.get("body", "")
+    if effective_body != draft_data.get("body", ""):
+        draft_store.update_body(draft_id, effective_body)
+
+    draft_store.update_status(draft_id, DraftStatus.APPROVED, approved_by="ui")
+
+    if _jira_client is not None:
+        try:
+            _jira_client.add_comment(draft_data["issue_key"], effective_body)
+            draft_store.mark_posted(draft_id)
+            logger.info("Draft %s posted to Jira via UI", draft_id)
+        except Exception as exc:
+            logger.error("Failed to post draft %s to Jira: %s", draft_id, exc)
+
+    return RedirectResponse(url=f"/ui/drafts/{draft_id}", status_code=303)
+
+
+@app.post("/ui/drafts/{draft_id}/reject")
+async def ui_reject(
+    request: Request,
+    draft_id: str,
+    feedback: str = Form(default=""),
+):
+    """Handle reject form submission."""
+    draft_data = draft_store.get(draft_id)
+    if draft_data is None:
+        raise HTTPException(status_code=404, detail="Draft not found")
+
+    draft_store.update_status(draft_id, DraftStatus.REJECTED, feedback=feedback)
+    return RedirectResponse(url=f"/ui/drafts/{draft_id}", status_code=303)
 
 
 if __name__ == "__main__":
