@@ -28,7 +28,6 @@ from src.models.context import GitPRMetadata
 
 logger = logging.getLogger(__name__)
 
-# ── PR reference regex patterns ────────────────────────────────────────────────
 _GITHUB_PR_PATTERNS = [
     re.compile(r"(?:PR|pull[_\s]?request)[#\s]+(\d+)", re.IGNORECASE),
     re.compile(r"github\.com/[^/]+/[^/]+/pull/(\d+)", re.IGNORECASE),
@@ -55,10 +54,10 @@ class GitClient:
         owner: Optional[str] = None,
         repo: Optional[str] = None,
     ) -> None:
-        self._provider = (provider or settings.git.provider).lower()
-        self._token = token or settings.git.token
-        self._owner = owner or settings.git.owner
-        self._repo = repo or settings.git.repo
+        self._provider = (provider if provider is not None else settings.git.provider).lower()
+        self._token = token if token is not None else settings.git.token
+        self._owner = owner if owner is not None else settings.git.owner
+        self._repo = repo if repo is not None else settings.git.repo
 
         # Base URL: use override or provider default
         if base_url:
@@ -83,7 +82,7 @@ class GitClient:
                 self._provider, self._owner, self._repo,
             )
 
-    # ── Properties ──────────────────────────────────────────────────────────────
+    # Properties
 
     @property
     def enabled(self) -> bool:
@@ -94,7 +93,7 @@ class GitClient:
     def provider(self) -> str:
         return self._provider
 
-    # ── Public API ───────────────────────────────────────────────────────────────
+    # Public API
 
     def get_pr(
         self,
@@ -197,8 +196,7 @@ class GitClient:
 
         return results
 
-    # ── GitHub implementation ────────────────────────────────────────────────────
-
+    # GitHub implementation
     def _get_github_pr(self, pr_number: int, repo: str) -> GitPRMetadata:
         owner, name = self._split_repo(repo)
         url = f"{self._base_url}/repos/{owner}/{name}/pulls/{pr_number}"
@@ -227,7 +225,7 @@ class GitClient:
             provider="github",
         )
 
-    # ── GitLab implementation ────────────────────────────────────────────────────
+    # GitLab implementation
 
     def _get_gitlab_mr(self, mr_number: int, repo: str) -> GitPRMetadata:
         # GitLab: project path encoded as URL component
@@ -253,7 +251,7 @@ class GitClient:
             provider="gitlab",
         )
 
-    # ── Bitbucket implementation ─────────────────────────────────────────────────
+    # Bitbucket implementation
 
     def _get_bitbucket_pr(self, pr_number: int, repo: str) -> GitPRMetadata:
         owner, name = self._split_repo(repo)
@@ -283,7 +281,7 @@ class GitClient:
             provider="bitbucket",
         )
 
-    # ── HTTP helpers ─────────────────────────────────────────────────────────────
+    # HTTP helpers
 
     def _get(self, url: str, params: Optional[dict] = None) -> dict | list:
         try:
@@ -298,7 +296,7 @@ class GitClient:
             logger.error("Git API request timed out: %s", url)
             raise
 
-    # ── Utility ──────────────────────────────────────────────────────────────────
+    # Utilities
 
     def _default_base_url(self) -> str:
         defaults = {
@@ -331,4 +329,4 @@ class GitClient:
             return _GITLAB_MR_PATTERNS
         if self._provider == "bitbucket":
             return _BITBUCKET_PR_PATTERNS
-        return _GITHUB_PR_PATTERNS  # github (default)
+        return _GITHUB_PR_PATTERNS  # default
