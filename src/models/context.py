@@ -1,8 +1,8 @@
 """Context collection data models.
 
 Captures all issue metadata, comment thread, attachments,
-Jenkins console-log links, RAG snippets, and log entries
-gathered by the ContextCollector.
+Jenkins console-log links, RAG snippets, log entries,
+Git PR metadata, and ELK log entries gathered by the ContextCollector.
 """
 
 from datetime import datetime
@@ -10,6 +10,25 @@ from typing import Optional, Any
 from pydantic import BaseModel
 
 from src.models.rag import RAGSnippet, LogEntry
+
+
+class GitPRMetadata(BaseModel):
+    """Metadata for a Git Pull Request linked to a Jira issue."""
+
+    pr_number: int
+    pr_title: str
+    pr_url: str
+    repo: str                            # owner/repo  e.g. "acme/vme-api"
+    author: str
+    state: str                           # "open" | "closed" | "merged"
+    merged: bool = False
+    merge_commit_sha: Optional[str] = None
+    head_branch: str = ""
+    base_branch: str = ""
+    created_at: Optional[str] = None
+    merged_at: Optional[str] = None
+    description: Optional[str] = None   # first 500 chars of PR body
+    provider: str = "github"            # "github" | "gitlab" | "bitbucket"
 
 
 class CommentSnapshot(BaseModel):
@@ -58,6 +77,9 @@ class ContextCollectionResult(BaseModel):
     log_entries: Optional[list[LogEntry]] = None
     testrail_results: Optional[list[dict[str, Any]]] = None
     build_metadata: Optional[dict[str, str]] = None  # commit, version, deploy_ts
+
+    git_prs: Optional[list[GitPRMetadata]] = None          
+    elk_log_entries: Optional[list[LogEntry]] = None  
 
     collection_timestamp: datetime
     collection_duration_ms: float
