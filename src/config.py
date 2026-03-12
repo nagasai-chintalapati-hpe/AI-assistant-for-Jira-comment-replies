@@ -86,6 +86,30 @@ class TestRailConfig:
 
 
 @dataclass(frozen=True)
+class GitConfig:
+    """Git provider integration (GitHub / GitLab / Bitbucket)."""
+
+    provider: str = os.getenv("GIT_PROVIDER", "github")  # github | gitlab | bitbucket
+    base_url: str = os.getenv("GIT_BASE_URL", "https://api.github.com")  # override for self-hosted
+    token: str = os.getenv("GIT_TOKEN", "")
+    owner: str = os.getenv("GIT_OWNER", "")  # org/user
+    repo: str = os.getenv("GIT_REPO", "")   # default repo (optional)
+
+
+@dataclass(frozen=True)
+class ELKConfig:
+    """Elasticsearch / OpenSearch log query configuration."""
+
+    host: str = os.getenv("ELK_HOST", "")          # e.g. https://elk.internal:9200
+    username: str = os.getenv("ELK_USERNAME", "")
+    password: str = os.getenv("ELK_PASSWORD", "")
+    api_key: str = os.getenv("ELK_API_KEY", "")    # alternative to user/pass
+    index_pattern: str = os.getenv("ELK_INDEX_PATTERN", "logs-*")  # index alias / pattern
+    default_time_window_hours: int = int(os.getenv("ELK_TIME_WINDOW_HOURS", "24"))
+    max_hits: int = int(os.getenv("ELK_MAX_HITS", "50"))
+
+
+@dataclass(frozen=True)
 class LogLookupConfig:
     """Log lookup service configuration."""
 
@@ -127,6 +151,8 @@ class Settings:
     confluence: ConfluenceConfig = field(default_factory=ConfluenceConfig)
     testrail: TestRailConfig = field(default_factory=TestRailConfig)
     log_lookup: LogLookupConfig = field(default_factory=LogLookupConfig)
+    git: GitConfig = field(default_factory=GitConfig)
+    elk: ELKConfig = field(default_factory=ELKConfig)
     notifications: NotificationConfig = field(default_factory=NotificationConfig)
     app: AppConfig = field(default_factory=AppConfig)
 
