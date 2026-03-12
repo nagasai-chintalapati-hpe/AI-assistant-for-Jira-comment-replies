@@ -9,14 +9,15 @@ Collects:
   • Jenkins console-log URLs (heuristic detection)
   • RAG snippets (semantic search against indexed documents)
   • Log entries (Jenkins console output / local log files)
-  • ELK / OpenSearch log entries (Phase 4)
+  • ELK / OpenSearch log entries
   • TestRail results (failed / retest tests for related runs)
-  • Git PR metadata (linked PRs from GitHub / GitLab / Bitbucket) (Phase 4)
+  • Git PR metadata (linked PRs from GitHub / GitLab / Bitbucket)
   • Build metadata (commit, version, deploy timestamp)
 """
 
 from __future__ import annotations
 
+import re
 from datetime import datetime, timezone
 from typing import Any, Optional
 
@@ -273,8 +274,6 @@ class ContextCollector:
         """
         if not self._testrail:
             return None
-
-        import re
 
         run_ids: set[int] = set()
         fields = issue_data.get("fields", {})

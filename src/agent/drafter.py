@@ -112,7 +112,7 @@ Output ONLY the refined reply – no markdown code fences, no explanation.
 
 
 class ResponseDrafter:
-    """Generates draft responses using templates + optional Copilot SDK refinement."""
+    """Generates draft responses using templates + Copilot SDK."""
 
     def __init__(self, api_key: Optional[str] = None, model: str = "gpt-4"):
         self._client = None
@@ -233,7 +233,6 @@ class ResponseDrafter:
             "expected_config": "See documentation",
         }
 
-        # Phase 4 additions — Git PR and ELK evidence snippets
         subs["pr_evidence"] = self._format_pr_evidence(context)
         subs["elk_log_preview"] = self._format_elk_preview(context)
 

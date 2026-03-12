@@ -10,6 +10,7 @@ Returns structured ``LogEntry`` objects for context enrichment.
 
 from __future__ import annotations
 
+import base64
 import logging
 import os
 import re
@@ -226,7 +227,7 @@ class LogLookupService:
             logger.warning("Jenkins build metadata fetch failed: %s", exc)
             return None
 
-    # ── ELK / OpenSearch ─────────────────────────────────────────────────────
+    # ELK / OpenSearch
 
     def search_elk_logs(
         self,
@@ -409,8 +410,6 @@ class LogLookupService:
 
     def _elk_auth_headers(self) -> dict[str, str]:
         """Return HTTP auth headers for ELK based on configured credentials."""
-        import base64
-
         if self._elk_api_key:
             return {"Authorization": f"ApiKey {self._elk_api_key}"}
         if self._elk_username and self._elk_password:
