@@ -29,57 +29,34 @@ from src.storage import SQLiteStore
 
 logger = logging.getLogger(__name__)
 
+# singletons 
+event_filter = EventFilter()
 
-# Configuration
-_ENV = os.getenv("ENV", "development").lower()
-_WEBHOOK_SECRET: Optional[str] = (os.getenv("WEBHOOK_SECRET") or "").strip() or None
-_APPROVAL_API_KEY: Optional[str] = os.getenv("APPROVAL_API_KEY") or None
-_DB_PATH = os.getenv("ASSISTANT_DB_PATH", ".data/assistant.db")
-_GITHUB_TOKEN: Optional[str] = os.getenv("GITHUB_TOKEN") or os.getenv("COPILOT_API_KEY") or None
-_COPILOT_MODEL: str = os.getenv("COPILOT_MODEL", "claude-sonnet-4.5")
+# Copilot SDK API key — optional; leave empty for keyword-only mode
+_COPILOT_API_KEY: Optional[str] = os.getenv("COPILOT_API_KEY")
+_COPILOT_MODEL: str = os.getenv("COPILOT_MODEL", "gpt-4")
 
-# Bot-loop protection: marker prepended to every comment the bot posts.
-BOT_COMMENT_MARKER = "\u200B\u200C\u200B\u200C\u200B"
+classifier = CommentClassifier(api_key=_COPILOT_API_KEY, model=_COPILOT_MODEL)
+drafter = ResponseDrafter(api_key=_COPILOT_API_KEY, model=_COPILOT_MODEL)
 
+# In-memory draft store
+draft_store: dict[str, dict] = {}
 
-# Persistent draft store (dict-like wrapper over SQLite)
-class PersistentDraftStore:
-    """Dict-like interface backed by SQLite for test compatibility."""
-
-    def __init__(self, backend: SQLiteStore):
-        self._backend = backend
-
-    def __setitem__(self, draft_id: str, value: dict) -> None:
-        self._backend.upsert_draft(value)
-
-    def __getitem__(self, draft_id: str) -> dict:
-        value = self._backend.get_draft(draft_id)
-        if value is None:
-            raise KeyError(draft_id)
-        return value
-
-    def __contains__(self, draft_id: str) -> bool:
-        return self._backend.get_draft(draft_id) is not None
-
-    def __len__(self) -> int:
-        return len(self._backend.list_drafts())
-
-    def get(self, draft_id: str) -> Optional[dict]:
-        return self._backend.get_draft(draft_id)
-
-    def values(self) -> list[dict]:
-        return self._backend.list_drafts()
-
-    def clear(self) -> None:
-        self._backend.clear_drafts()
-
-
-# Singletons
-_draft_backend = SQLiteStore(_DB_PATH)
-event_filter = EventFilter(event_store=_draft_backend)
-classifier = CommentClassifier(github_token=_GITHUB_TOKEN, model=_COPILOT_MODEL)
-drafter = ResponseDrafter(github_token=_GITHUB_TOKEN, model=_COPILOT_MODEL)
-draft_store = PersistentDraftStore(_draft_backend)
+# Notification service (optional — disabled when env vars are empty)
+_teams = TeamsNotifier(webhook_url=os.getenv("TEAMS_WEBHOOK_URL"))
+_email = EmailNotifier(
+    smtp_host=os.getenv("SMTP_HOST"),
+    smtp_port=int(os.getenv("SMTP_PORT", "587")),
+    smtp_username=os.getenv("SMTP_USERNAME"),
+    smtp_password=os.getenv("SMTP_PASSWORD"),
+    from_address=os.getenv("EMAIL_FROM"),
+    to_addresses=[
+        a.strip()
+        for a in (os.getenv("EMAIL_TO") or "").split(",")
+        if a.strip()
+    ],
+)
+notifier = NotificationService(teams=_teams, email=_email)
 
 
 # App lifecycle
@@ -169,8 +146,8 @@ async def jira_webhook(request: Request):
 # Pipeline 
 async def _handle_comment_event(event: JiraWebhookEvent) -> dict:
     """
-    Full MVP v1 pipeline:
-    Trigger → Retrieve (context + Jenkins) → Classify → Draft → Store → Notify
+    Full pipeline:
+      Comment → Classify → Context → Draft → Store
     """
     assert event.comment is not None
     assert event.issue is not None

@@ -1,4 +1,13 @@
-"""Context collector – gathers full issue context for MVP v1."""
+"""Context collector – gathers full issue context.
+
+Collects:
+  • Issue fields (summary, description, environment, versions, components, labels)
+  • Last N comments (default 10)
+  • Attachment metadata
+  • Linked issues
+  • Changelog (status transitions)
+  • Jenkins console-log URLs (heuristic detection)
+"""
 
 from __future__ import annotations
 

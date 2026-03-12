@@ -1,4 +1,13 @@
-"""Notification senders for Teams and Email."""
+"""Notification integrations — Teams webhook + Email (SMTP).
+
+Sends a summary card / email when:
+  • A new draft is generated  (notify_draft_generated)
+  • A draft is approved       (notify_draft_approved)
+  • A draft is rejected       (notify_draft_rejected)
+
+Both channels are **optional** — if credentials are missing the call
+is silently skipped with a log message.
+"""
 
 from __future__ import annotations
 

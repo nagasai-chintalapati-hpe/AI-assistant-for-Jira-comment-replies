@@ -1,4 +1,4 @@
-"""Tests for JiraClient – full issue and comment retrieval (MVP v1).
+"""Tests for JiraClient – full issue and comment retrieval.
 
 All tests mock the underlying atlassian.Jira client so we never
 hit a real Jira instance.

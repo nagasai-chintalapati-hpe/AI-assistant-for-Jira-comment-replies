@@ -1,109 +1,236 @@
-"""SQLite-backed persistence for drafts and processed webhook events."""
+"""SQLite-backed draft store.
+
+Provides persistent CRUD operations for drafts with full audit
+traceability.  Thread-safe via ``check_same_thread=False``.
+"""
 
 from __future__ import annotations
 
 import json
+import logging
 import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
+from src.models.draft import Draft, DraftStatus
 
-class SQLiteStore:
-    """Simple persistent store for MVP state."""
+logger = logging.getLogger(__name__)
 
-    def __init__(self, db_path: str) -> None:
-        self.db_path = db_path
+_SCHEMA = """\
+CREATE TABLE IF NOT EXISTS drafts (
+    draft_id        TEXT PRIMARY KEY,
+    issue_key       TEXT NOT NULL,
+    comment_id      TEXT NOT NULL,
+    created_at      TEXT NOT NULL,
+    created_by      TEXT NOT NULL,
+    body            TEXT NOT NULL,
+    classification  TEXT,
+    confidence      REAL NOT NULL DEFAULT 0.0,
+    status          TEXT NOT NULL DEFAULT 'generated',
+    approved_by     TEXT,
+    approved_at     TEXT,
+    posted_at       TEXT,
+    feedback        TEXT,
+    data_json       TEXT NOT NULL   -- full Draft model as JSON
+);
+
+CREATE INDEX IF NOT EXISTS idx_drafts_issue_key ON drafts(issue_key);
+CREATE INDEX IF NOT EXISTS idx_drafts_status    ON drafts(status);
+CREATE INDEX IF NOT EXISTS idx_drafts_created   ON drafts(created_at);
+"""
+
+
+class SQLiteDraftStore:
+    """Persistent draft store backed by SQLite.
+
+    Parameters
+    ----------
+    db_path : str
+        Path to the SQLite database file.  Parent directories are created
+        automatically.  Use ``":memory:"`` for an in-memory database
+        (useful in tests).
+    """
+
+    def __init__(self, db_path: str = ".data/assistant.db") -> None:
+        self._db_path = db_path
         if db_path != ":memory:":
             Path(db_path).parent.mkdir(parents=True, exist_ok=True)
-        self._init_schema()
+        self._conn = sqlite3.connect(db_path, check_same_thread=False)
+        self._conn.row_factory = sqlite3.Row
+        self._conn.execute("PRAGMA journal_mode=WAL")
+        self._create_tables()
+        logger.info("SQLite draft store ready (%s)", db_path)
 
-    def _connect(self) -> sqlite3.Connection:
-        return sqlite3.connect(self.db_path)
+    # Schema bootstrap
 
-    def _init_schema(self) -> None:
-        with self._connect() as conn:
-            conn.execute("""
-                CREATE TABLE IF NOT EXISTS drafts (
-                    draft_id TEXT PRIMARY KEY,
-                    issue_key TEXT NOT NULL,
-                    payload_json TEXT NOT NULL,
-                    updated_at TEXT NOT NULL
-                )
-                """)
-            conn.execute("""
-                CREATE TABLE IF NOT EXISTS processed_events (
-                    event_id TEXT PRIMARY KEY,
-                    processed_at TEXT NOT NULL
-                )
-                """)
+    def _create_tables(self) -> None:
+        """Create tables and indexes if they don't exist."""
+        self._conn.executescript(_SCHEMA)
+        self._conn.commit()
 
-    # Draft APIs
-    def upsert_draft(self, draft: dict) -> None:
-        draft_id = draft["draft_id"]
-        issue_key = draft.get("issue_key", "")
-        updated_at = datetime.now(timezone.utc).isoformat()
-        payload_json = json.dumps(draft)
-        with self._connect() as conn:
-            conn.execute(
-                """
-                INSERT INTO drafts(draft_id, issue_key, payload_json, updated_at)
-                VALUES(?, ?, ?, ?)
-                ON CONFLICT(draft_id) DO UPDATE SET
-                    issue_key=excluded.issue_key,
-                    payload_json=excluded.payload_json,
-                    updated_at=excluded.updated_at
-                """,
-                (draft_id, issue_key, payload_json, updated_at),
+    # CRUD operations
+
+    def save(self, draft: Draft, classification: Optional[str] = None) -> None:
+        """Insert or replace a draft."""
+        self._conn.execute(
+            """INSERT OR REPLACE INTO drafts
+               (draft_id, issue_key, comment_id, created_at, created_by,
+                body, classification, confidence, status,
+                approved_by, approved_at, posted_at, feedback, data_json)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                draft.draft_id,
+                draft.issue_key,
+                draft.in_reply_to_comment_id,
+                draft.created_at.isoformat(),
+                draft.created_by,
+                draft.body,
+                classification,
+                draft.confidence_score,
+                draft.status.value,
+                draft.approved_by,
+                draft.approved_at.isoformat() if draft.approved_at else None,
+                draft.posted_at.isoformat() if draft.posted_at else None,
+                None,  # feedback
+                draft.model_dump_json(),
+            ),
+        )
+        self._conn.commit()
+        logger.debug("Saved draft %s for %s", draft.draft_id, draft.issue_key)
+
+    def get(self, draft_id: str) -> Optional[dict]:
+        """Return a single draft as a dict, or None."""
+        row = self._conn.execute(
+            "SELECT data_json FROM drafts WHERE draft_id = ?", (draft_id,)
+        ).fetchone()
+        if row is None:
+            return None
+        return json.loads(row["data_json"])
+
+    def list_all(
+        self,
+        issue_key: Optional[str] = None,
+        status: Optional[str] = None,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> list[dict]:
+        """List drafts with optional filters."""
+        query = "SELECT data_json FROM drafts WHERE 1=1"
+        params: list = []
+
+        if issue_key:
+            query += " AND issue_key = ?"
+            params.append(issue_key)
+        if status:
+            query += " AND status = ?"
+            params.append(status)
+
+        query += " ORDER BY created_at DESC LIMIT ? OFFSET ?"
+        params.extend([limit, offset])
+
+        rows = self._conn.execute(query, params).fetchall()
+        return [json.loads(r["data_json"]) for r in rows]
+
+    def count(
+        self,
+        issue_key: Optional[str] = None,
+        status: Optional[str] = None,
+    ) -> int:
+        """Count drafts with optional filters."""
+        query = "SELECT COUNT(*) as cnt FROM drafts WHERE 1=1"
+        params: list = []
+
+        if issue_key:
+            query += " AND issue_key = ?"
+            params.append(issue_key)
+        if status:
+            query += " AND status = ?"
+            params.append(status)
+
+        row = self._conn.execute(query, params).fetchone()
+        return row["cnt"] if row else 0
+
+    def update_status(
+        self,
+        draft_id: str,
+        status: DraftStatus,
+        approved_by: Optional[str] = None,
+        feedback: Optional[str] = None,
+    ) -> bool:
+        """Update draft status (approve / reject).  Returns True if found."""
+        now = datetime.now(timezone.utc).isoformat()
+
+        # First update indexed columns
+        result = self._conn.execute(
+            """UPDATE drafts
+               SET status = ?, approved_by = ?, approved_at = ?, feedback = ?
+               WHERE draft_id = ?""",
+            (status.value, approved_by, now if approved_by else None, feedback, draft_id),
+        )
+
+        if result.rowcount == 0:
+            return False
+
+        # Also update the JSON blob
+        row = self._conn.execute(
+            "SELECT data_json FROM drafts WHERE draft_id = ?", (draft_id,)
+        ).fetchone()
+        if row:
+            data = json.loads(row["data_json"])
+            data["status"] = status.value
+            data["approved_by"] = approved_by
+            data["approved_at"] = now if approved_by else None
+            if feedback:
+                data["feedback"] = feedback
+            self._conn.execute(
+                "UPDATE drafts SET data_json = ? WHERE draft_id = ?",
+                (json.dumps(data), draft_id),
             )
 
-    def get_draft(self, draft_id: str) -> Optional[dict]:
-        with self._connect() as conn:
-            row = conn.execute(
-                "SELECT payload_json FROM drafts WHERE draft_id = ?",
-                (draft_id,),
-            ).fetchone()
-            if row is None:
-                return None
-            return json.loads(row[0])
+        self._conn.commit()
+        logger.info("Updated draft %s → %s", draft_id, status.value)
+        return True
 
-    def list_drafts(self, issue_key: Optional[str] = None) -> list[dict]:
-        with self._connect() as conn:
-            if issue_key:
-                rows = conn.execute(
-                    "SELECT payload_json FROM drafts WHERE issue_key = ? ORDER BY updated_at DESC",
-                    (issue_key,),
-                ).fetchall()
-            else:
-                rows = conn.execute(
-                    "SELECT payload_json FROM drafts ORDER BY updated_at DESC"
-                ).fetchall()
-            return [json.loads(row[0]) for row in rows]
+    def mark_posted(self, draft_id: str) -> bool:
+        """Mark a draft as posted to Jira.  Returns True if found."""
+        now = datetime.now(timezone.utc).isoformat()
+        result = self._conn.execute(
+            "UPDATE drafts SET posted_at = ? WHERE draft_id = ?",
+            (now, draft_id),
+        )
+        if result.rowcount == 0:
+            return False
 
-    def clear_drafts(self) -> None:
-        with self._connect() as conn:
-            conn.execute("DELETE FROM drafts")
-
-    # Event APIs (idempotency)
-    def is_event_processed(self, event_id: str) -> bool:
-        with self._connect() as conn:
-            row = conn.execute(
-                "SELECT 1 FROM processed_events WHERE event_id = ?",
-                (event_id,),
-            ).fetchone()
-            return row is not None
-
-    def mark_event_processed(self, event_id: str) -> None:
-        with self._connect() as conn:
-            conn.execute(
-                """
-                INSERT INTO processed_events(event_id, processed_at)
-                VALUES(?, ?)
-                ON CONFLICT(event_id) DO NOTHING
-                """,
-                (event_id, datetime.now(timezone.utc).isoformat()),
+        # Update JSON blob too
+        row = self._conn.execute(
+            "SELECT data_json FROM drafts WHERE draft_id = ?", (draft_id,)
+        ).fetchone()
+        if row:
+            data = json.loads(row["data_json"])
+            data["posted_at"] = now
+            self._conn.execute(
+                "UPDATE drafts SET data_json = ? WHERE draft_id = ?",
+                (json.dumps(data), draft_id),
             )
 
-    def clear_processed_events(self) -> None:
-        with self._connect() as conn:
-            conn.execute("DELETE FROM processed_events")
+        self._conn.commit()
+        return True
+
+    def delete(self, draft_id: str) -> bool:
+        """Delete a draft.  Returns True if it existed."""
+        result = self._conn.execute(
+            "DELETE FROM drafts WHERE draft_id = ?", (draft_id,)
+        )
+        self._conn.commit()
+        return result.rowcount > 0
+
+    # Housekeeping
+
+    def close(self) -> None:
+        """Close the database connection."""
+        self._conn.close()
+
+    @property
+    def db_path(self) -> str:
+        return self._db_path

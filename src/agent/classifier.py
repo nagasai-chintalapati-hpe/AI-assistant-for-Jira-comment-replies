@@ -1,4 +1,19 @@
-"""Comment classification module using Copilot SDK with keyword fallback."""
+"""Comment classifier – determines comment intent.
+
+Strategy:
+  1. Try Copilot SDK for structured classification.
+  2. Fall back to keyword heuristics if the Copilot SDK is unavailable or low-confidence.
+
+Classification buckets:
+  • Cannot Repro
+  • Need Info / Logs
+  • Fixed — Validate
+  • By Design
+  • Duplicate / Already Fixed
+  • Blocked / Waiting
+  • Configuration Issue
+  • Other (fallback)
+"""
 
 from __future__ import annotations
 
@@ -59,15 +74,42 @@ _KEYWORD_RULES = [
         "Issue is by design, not a bug.",
         [],
     ),
+    (
+        ["duplicate", "already fixed", "fixed in previous", "same as",
+         "duplicate of", "dup of", "already reported", "known issue"],
+        CommentType.DUPLICATE_FIXED,
+        "Comment indicates this is a duplicate or already fixed in another ticket",
+        [],
+    ),
+    (
+        ["blocked by", "waiting for", "depends on", "dependency",
+         "blocked on", "waiting on", "upstream", "pending"],
+        CommentType.BLOCKED_WAITING,
+        "Comment indicates work is blocked by a dependency or waiting for external input",
+        ["Blocking issue key", "Expected resolution timeline"],
+    ),
+    (
+        ["configuration issue", "config issue", "misconfigured", "misconfiguration",
+         "not a bug", "setup issue", "wrong config", "config error",
+         "environment setup", "user error"],
+        CommentType.CONFIG_ISSUE,
+        "Comment suggests this is a configuration or setup issue, not a code defect",
+        ["Correct configuration steps", "Documentation reference"],
+    ),
 ]
 
 _COPILOT_SYSTEM_PROMPT = """\
-Classify this Jira comment into ONE of these categories:
-  cannot_reproduce  – developer cannot reproduce the issue
-  need_more_info    – more logs/details/steps needed
-  fixed_validate    – fix is ready and needs validation
-  by_design         – behaviour is intentional/expected
-  other             – does not fit any of the above
+You are a Jira comment classifier for a QA team. Given a developer comment on a
+bug ticket, classify it into exactly ONE of these categories:
+
+  cannot_reproduce    – Developer says they cannot reproduce the issue
+  need_more_info      – Comment requests logs, environment details, or other info
+  fixed_validate      – A fix is ready and needs validation / retesting
+  by_design           – Behavior is by design / expected / as specified
+  duplicate_fixed     – Issue is a duplicate or was already fixed in another ticket
+  blocked_waiting     – Work is blocked by a dependency or waiting for something
+  config_issue        – Not a code bug; it’s a configuration / setup issue
+  other               – Does not clearly fit any of the above
 
 Respond ONLY with valid JSON (no markdown):
 {
@@ -305,6 +347,18 @@ class CommentClassifier:
             CommentType.FIXED_VALIDATE: [
                 "Which build contains the fix?",
                 "What are the retest steps?",
+            ],
+            CommentType.DUPLICATE_FIXED: [
+                "Which ticket is this a duplicate of?",
+                "Which version/build contains the fix?",
+            ],
+            CommentType.BLOCKED_WAITING: [
+                "Which issue/dependency is blocking this?",
+                "What is the expected timeline for resolution?",
+            ],
+            CommentType.CONFIG_ISSUE: [
+                "What is the correct configuration?",
+                "Is there documentation for the expected setup?",
             ],
         }
         return mapping.get(ctype)

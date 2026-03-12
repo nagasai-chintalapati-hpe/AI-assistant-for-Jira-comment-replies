@@ -1,4 +1,13 @@
-"""Webhook event filtering and validation."""
+"""
+Webhook event filtering and validation.
+
+Applies the gate rules described in the architecture doc:
+  • Issue type must be Bug / Defect
+  • Issue status in an allowed set (In Progress, Ready for QA, Reopened, Open)
+  • Comment author should belong to the developer group OR trigger
+    heuristic keywords ("cannot repro", "fixed in", "need logs", etc.)
+  • Idempotency: duplicate event IDs are rejected
+"""
 
 from __future__ import annotations
 
@@ -66,9 +75,19 @@ TRIGGER_KEYWORDS: list[str] = [
     "fix deployed",
     "please validate",
     "please verify",
-    "merged",
-    "deployed",
-    "released",
+    "duplicate",
+    "duplicate of",
+    "same as",
+    "known issue",
+    "blocked by",
+    "waiting for",
+    "depends on",
+    "blocked on",
+    "configuration issue",
+    "config issue",
+    "not a bug",
+    "misconfigured",
+    "setup issue",
 ]
 
 
@@ -168,10 +187,8 @@ class EventFilter:
         """
         Return True when the comment should be processed.
 
-        NOTE: This is no longer used in the main evaluate() path.
-        The classifier handles bucket assignment — the filter only
-        gates on issue type, status, dedup, and non-empty body.
-        Kept for backward compatibility / testing.
+        Uses keyword matching against the comment body as
+        a proxy for "comment author belongs to the developer group".
         """
         if event.comment is None:
             return False

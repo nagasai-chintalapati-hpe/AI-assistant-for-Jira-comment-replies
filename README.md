@@ -6,7 +6,7 @@ AI assistant for Jira defect comments. It listens to Jira webhook events, classi
 
 ---
 
-## MVP v1 Status
+## Completed
 
 ### Phase 1: Architecture & Scaffolding
 - [x] Project structure, config, and `.env` template

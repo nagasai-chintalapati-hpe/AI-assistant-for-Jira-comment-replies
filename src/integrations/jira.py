@@ -1,4 +1,16 @@
-import logging
+"""Jira Cloud integration – full issue + comment retrieval.
+
+Provides:
+  • get_issue          – full issue JSON
+  • get_comments       – all comments on an issue
+  • get_last_comments  – last N comments (default 10)
+  • get_attachments    – attachment metadata list
+  • get_linked_issues  – linked issue keys with relationship type
+  • get_changelog      – issue changelog (status transitions, etc.)
+  • add_comment        – post a (optionally internal) comment
+  • update_custom_field / add_label / transition_issue – mutations
+"""
+
 import os
 import re
 from typing import Any, Optional
@@ -183,7 +195,7 @@ class JiraClient:
     def detect_jenkins_links(self, issue_key: str) -> list[str]:
         """
         Scan the issue description, comments, and remote-links for
-        Jenkins console URLs (heuristic for MVP v1).
+        Jenkins console URLs.
         """
         urls: list[str] = []
         try:

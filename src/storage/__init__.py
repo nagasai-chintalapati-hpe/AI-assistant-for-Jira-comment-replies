@@ -1,5 +1,5 @@
-"""Storage backends for persistent state."""
+"""Storage layer for persistent draft and audit data."""
 
-from .sqlite_store import SQLiteStore
+from src.storage.sqlite_store import SQLiteDraftStore
 
-__all__ = ["SQLiteStore"]
+__all__ = ["SQLiteDraftStore"]

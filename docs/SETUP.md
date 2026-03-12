@@ -3,8 +3,8 @@
 ## Prerequisites
 
 - Python 3.10+
-- Jira Cloud project and API token
-- Optional: Copilot API key for LLM enhancement
+- Jira Cloud instance with API access
+- Copilot SDK API key for AI-powered classification & refinement (optional)
 
 ## Install
 
@@ -30,7 +30,80 @@ Set these values in `.env`.
 | `JIRA_USERNAME` | Jira user email |
 | `JIRA_API_TOKEN` | Jira API token |
 
-### Required for secured production
+#### Core Settings
+
+| Variable | Required | Description |
+|---|---|---|
+| `JIRA_BASE_URL` | Yes (for live Jira) | e.g. `https://your-org.atlassian.net` |
+| `JIRA_USERNAME` | Yes (for live Jira) | Your Jira email |
+| `JIRA_API_TOKEN` | Yes (for live Jira) | Generate in Jira → Personal Settings → API tokens |
+| `COPILOT_API_KEY` | No | Leave blank for keyword-only mode |
+| `COPILOT_MODEL` | No | Default: `gpt-4` |
+| `APP_PORT` | No | Default: `8000` |
+| `ASSISTANT_DB_PATH` | No | Default: `.data/assistant.db` |
+
+#### Local LLM Settings
+
+| Variable | Required | Description |
+|---|---|---|
+| `LLM_BACKEND` | No | `copilot` (default) or `local` for llama.cpp |
+| `LLM_MODEL_PATH` | If `local` | Path to `.gguf` model file |
+| `LLM_N_CTX` | No | Context window size (default: `4096`) |
+| `LLM_N_GPU_LAYERS` | No | GPU layers (default: `0` = CPU only) |
+| `LLM_TEMPERATURE` | No | Default: `0.1` |
+| `LLM_MAX_TOKENS` | No | Default: `1024` |
+| `LLM_N_THREADS` | No | Default: `4` |
+
+#### RAG Settings
+
+| Variable | Required | Description |
+|---|---|---|
+| `CHROMA_PERSIST_DIR` | No | Default: `.data/chroma` |
+| `RAG_EMBEDDING_MODEL` | No | Default: `all-MiniLM-L6-v2` |
+| `RAG_CHUNK_SIZE` | No | Default: `500` chars |
+| `RAG_CHUNK_OVERLAP` | No | Default: `50` chars |
+| `RAG_TOP_K` | No | Default: `5` snippets |
+| `PDF_UPLOAD_DIR` | No | Default: `.data/pdfs` |
+
+#### Confluence Settings
+
+| Variable | Required | Description |
+|---|---|---|
+| `CONFLUENCE_BASE_URL` | No | Confluence Cloud URL |
+| `CONFLUENCE_USERNAME` | No | Confluence email |
+| `CONFLUENCE_API_TOKEN` | No | Confluence API token |
+| `CONFLUENCE_SPACES` | No | Comma-separated space keys to index |
+| `CONFLUENCE_LABELS` | No | Comma-separated labels to filter pages |
+
+#### TestRail Settings
+
+| Variable | Required | Description |
+|---|---|---|
+| `TESTRAIL_BASE_URL` | No | TestRail instance URL |
+| `TESTRAIL_USERNAME` | No | TestRail email |
+| `TESTRAIL_API_KEY` | No | TestRail API key |
+
+#### Log Lookup Settings
+
+| Variable | Required | Description |
+|---|---|---|
+| `JENKINS_BASE_URL` | No | Jenkins server URL |
+| `JENKINS_USERNAME` | No | Jenkins username |
+| `JENKINS_API_TOKEN` | No | Jenkins API token |
+| `LOG_DIR` | No | Local log directory path |
+| `LOG_TIME_WINDOW_HOURS` | No | Default: `24` |
+
+#### Notification Settings
+
+| Variable | Required | Description |
+|---|---|---|
+| `TEAMS_WEBHOOK_URL` | No | Teams incoming webhook URL for notifications |
+| `SMTP_HOST` | No | SMTP server hostname (leave blank to disable email) |
+| `SMTP_PORT` | No | Default: `587` |
+| `SMTP_USERNAME` | No | SMTP login username |
+| `SMTP_PASSWORD` | No | SMTP login password |
+| `EMAIL_FROM` | No | Sender email address |
+| `EMAIL_TO` | No | Comma-separated recipient addresses |
 
 | Variable | Description |
 |---|---|
