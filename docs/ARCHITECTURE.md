@@ -49,12 +49,43 @@
    └─▶ Email (SMTP) → HTML summary per event
 ```
 
-## Components
+## Pipeline Stages
 
-### 1. Webhook Receiver (`src/api/app.py`)
-- FastAPI server listening for Jira webhook events
-- Parses payload into `JiraWebhookEvent` (Pydantic model)
-- Orchestrates the full pipeline: filter → classify → context → draft → store
+1. **Webhook ingest**
+   - Receives Jira comment events.
+   - Validates payload structure.
+   - Optionally validates HMAC signature when `WEBHOOK_SECRET` is configured.
+
+2. **Event filtering**
+   - Checks event type.
+   - Enforces idempotency.
+   - Applies issue-type/status/keyword gates.
+
+3. **Classification**
+   - Classifies comment intent into MVP buckets.
+   - Uses keyword logic with optional LLM-assisted refinement.
+
+4. **Context collection**
+   - Fetches Jira issue details, comments, links, attachments, changelog.
+   - Extracts Jenkins console log URLs where present.
+
+5. **Draft generation**
+   - Selects template by classification.
+   - Fills template from context.
+   - Produces citations and suggested actions/labels.
+
+6. **Persistence and decisions**
+   - Stores drafts and processed events in SQLite.
+   - Supports reviewer actions: approve or reject.
+   - On approve, attempts to post draft back to Jira.
+
+7. **Notifications (optional)**
+   - Sends generated/approved/rejected events to configured channels.
+
+## Runtime Components
+
+### API Layer — [../src/api/app.py](../src/api/app.py)
+- FastAPI application and orchestration entrypoint
 - Endpoints:
   - `POST /webhook/jira` — Receive and process comment events
   - `GET /health` — Health check
