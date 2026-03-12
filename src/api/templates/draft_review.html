@@ -1,0 +1,195 @@
+{% extends "base.html" %}
+{% block title %}{{ draft.issue_key }} — Draft Review{% endblock %}
+
+{% block content %}
+
+<!-- Header -->
+<div class="d-flex align-items-center gap-2 mb-1">
+  <a href="/ui" class="btn btn-sm btn-outline-secondary">← Drafts</a>
+  <h5 class="mb-0">
+    <a href="{{ jira_url }}" target="_blank" class="text-decoration-none">{{ draft.issue_key }}</a>
+  </h5>
+  <span class="badge
+    {% if draft.status == 'generated' %}bg-warning text-dark
+    {% elif draft.status == 'approved' or draft.status == 'posted' %}bg-success
+    {% elif draft.status == 'rejected' %}bg-danger
+    {% else %}bg-secondary{% endif %}">
+    {{ draft.status }}
+  </span>
+  {% if draft.classification_type %}
+  <span class="badge bg-light text-dark border">{{ draft.classification_type | replace('_', ' ') | title }}</span>
+  {% endif %}
+  {% if draft.confidence_score %}
+  <span class="text-muted small ms-1">{{ "%.0f"|format(draft.confidence_score * 100) }}% confidence</span>
+  {% endif %}
+</div>
+<p class="text-muted small mb-3">{{ draft.classification_reasoning or '' }}</p>
+
+<div class="row g-3">
+
+  <!-- Left: Draft body + actions -->
+  <div class="col-lg-7">
+
+    <!-- Draft body (editable) -->
+    <div class="card mb-3">
+      <div class="card-header d-flex justify-content-between align-items-center">
+        <span class="fw-semibold">Draft Reply</span>
+        <small class="text-muted">{{ draft.draft_id }}</small>
+      </div>
+      <div class="card-body">
+        <textarea
+          id="draftBody"
+          class="form-control font-monospace"
+          rows="12"
+          style="font-size:0.85rem;">{{ draft.body }}</textarea>
+      </div>
+    </div>
+
+    <!-- Actions -->
+    {% if draft.status == 'generated' %}
+    <div class="card mb-3">
+      <div class="card-body d-flex gap-2 flex-wrap">
+
+        <!-- Approve -->
+        <form method="post" action="/ui/drafts/{{ draft.draft_id }}/approve" class="d-inline">
+          <input type="hidden" name="body" id="approveBody" value="{{ draft.body }}" />
+          <button type="submit" class="btn btn-success"
+            onclick="document.getElementById('approveBody').value=document.getElementById('draftBody').value">
+            ✅ Approve &amp; Post to Jira
+          </button>
+        </form>
+
+        <!-- Reject -->
+        <button class="btn btn-danger" data-bs-toggle="collapse" data-bs-target="#rejectForm">
+          ❌ Reject
+        </button>
+
+        <!-- Copy to clipboard -->
+        <button class="btn btn-outline-secondary" onclick="copyDraft()">📋 Copy</button>
+
+        <!-- Open Jira -->
+        <a href="{{ jira_url }}" target="_blank" class="btn btn-outline-primary">🔗 Open in Jira</a>
+
+      </div>
+
+      <!-- Reject form (collapsed) -->
+      <div class="collapse px-3 pb-3" id="rejectForm">
+          <form method="post" action="/ui/drafts/{{ draft.draft_id }}/reject">
+          <label class="form-label small fw-semibold">Rejection reason (optional)</label>
+          <textarea name="feedback" class="form-control mb-2" rows="2" placeholder="e.g. Missing environment details"></textarea>
+          <button type="submit" class="btn btn-sm btn-danger">Confirm Reject</button>
+        </form>
+      </div>
+    </div>
+    {% else %}
+    <div class="alert alert-secondary small">
+      This draft has already been <strong>{{ draft.status }}</strong>.
+      {% if draft.status == 'posted' %}The comment has been posted to Jira.{% endif %}
+    </div>
+    {% endif %}
+
+    <!-- Suggested actions & labels -->
+    {% if draft.suggested_actions or draft.suggested_labels %}
+    <div class="card mb-3">
+      <div class="card-header fw-semibold small">Suggested Actions</div>
+      <div class="card-body small">
+        {% for action in draft.suggested_actions or [] %}
+        <span class="badge bg-primary me-1">{{ action.action }}: {{ action.value }}</span>
+        {% endfor %}
+        {% for label in draft.suggested_labels or [] %}
+        <span class="badge bg-secondary me-1">{{ label }}</span>
+        {% endfor %}
+      </div>
+    </div>
+    {% endif %}
+
+  </div>
+
+  <!-- Right: Evidence panel -->
+  <div class="col-lg-5">
+
+    <!-- What's missing -->
+    {% if missing_context %}
+    <div class="card mb-3 border-warning">
+      <div class="card-header bg-warning bg-opacity-10 fw-semibold small">⚠️ What's Missing</div>
+      <ul class="list-group list-group-flush">
+        {% for item in missing_context %}
+        <li class="list-group-item small">{{ item }}</li>
+        {% endfor %}
+      </ul>
+    </div>
+    {% endif %}
+
+    <!-- Citations / Evidence -->
+    {% if draft.citations %}
+    <div class="card mb-3">
+      <div class="card-header fw-semibold small">📎 Evidence &amp; Citations</div>
+      <ul class="list-group list-group-flush">
+        {% for c in draft.citations %}
+        <li class="list-group-item small">
+          <div class="fw-semibold text-muted">{{ c.source }}</div>
+          {% if c.url %}
+          <a href="{{ c.url }}" target="_blank" class="text-break small">{{ c.url }}</a><br/>
+          {% endif %}
+          {% if c.excerpt %}
+          <span class="text-secondary" style="font-size:0.78rem;">{{ c.excerpt[:150] }}</span>
+          {% endif %}
+        </li>
+        {% endfor %}
+      </ul>
+    </div>
+    {% endif %}
+
+    <!-- Evidence used -->
+    {% if draft.evidence_used %}
+    <div class="card mb-3">
+      <div class="card-header fw-semibold small">🔍 Evidence Used</div>
+      <ul class="list-group list-group-flush">
+        {% for e in draft.evidence_used %}
+        <li class="list-group-item small text-muted">{{ e }}</li>
+        {% endfor %}
+      </ul>
+    </div>
+    {% endif %}
+
+    <!-- Draft metadata -->
+    <div class="card">
+      <div class="card-header fw-semibold small">ℹ️ Metadata</div>
+      <ul class="list-group list-group-flush small">
+        <li class="list-group-item d-flex justify-content-between">
+          <span class="text-muted">Created</span>
+          <span>{{ draft.created_at[:19] if draft.created_at else '—' }}</span>
+        </li>
+        {% if draft.approved_at %}
+        <li class="list-group-item d-flex justify-content-between">
+          <span class="text-muted">Approved</span>
+          <span>{{ draft.approved_at[:19] }}</span>
+        </li>
+        {% endif %}
+        {% if draft.approved_by %}
+        <li class="list-group-item d-flex justify-content-between">
+          <span class="text-muted">Approved by</span>
+          <span>{{ draft.approved_by }}</span>
+        </li>
+        {% endif %}
+        <li class="list-group-item d-flex justify-content-between">
+          <span class="text-muted">Comment ID</span>
+          <span class="font-monospace">{{ draft.in_reply_to_comment_id or '—' }}</span>
+        </li>
+      </ul>
+    </div>
+
+  </div>
+</div>
+
+<script>
+function copyDraft() {
+  const text = document.getElementById('draftBody').value;
+  navigator.clipboard.writeText(text).then(() => {
+    const btn = event.target;
+    btn.textContent = '✅ Copied!';
+    setTimeout(() => btn.textContent = '📋 Copy', 2000);
+  });
+}
+</script>
+{% endblock %}

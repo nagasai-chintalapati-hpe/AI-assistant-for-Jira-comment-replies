@@ -1,0 +1,37 @@
+/* Jira Comment Assistant — Review UI */
+
+body {
+  background-color: #f8f9fa;
+  font-size: 0.9rem;
+}
+
+.navbar-brand {
+  font-size: 1rem;
+}
+
+.list-group-item-action:hover {
+  background-color: #f0f4ff;
+}
+
+.font-monospace {
+  font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+}
+
+textarea.font-monospace {
+  resize: vertical;
+  background-color: #fdfdfd;
+}
+
+.card {
+  border-radius: 0.5rem;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.06);
+}
+
+.card-header {
+  background-color: #f1f3f5;
+  border-bottom: 1px solid #e9ecef;
+}
+
+.badge {
+  font-weight: 500;
+}
