@@ -24,6 +24,10 @@ from src.integrations.notifications import (
     EmailNotifier,
     NotificationService,
 )
+from src.storage.sqlite_store import SQLiteDraftStore
+from src.integrations.log_lookup import LogLookupService
+from src.integrations.testrail import TestRailClient
+from src.integrations.jira import JiraClient
 from src.config import settings
 
 import shutil
@@ -41,8 +45,19 @@ _COPILOT_MODEL: str = os.getenv("COPILOT_MODEL", "gpt-4")
 classifier = CommentClassifier(api_key=_COPILOT_API_KEY, model=_COPILOT_MODEL)
 drafter = ResponseDrafter(api_key=_COPILOT_API_KEY, model=_COPILOT_MODEL)
 
-# In-memory draft store
-draft_store: dict[str, dict] = {}
+# Persistent SQLite draft store (replaces in-memory dict)
+draft_store = SQLiteDraftStore(db_path=settings.app.db_path)
+
+# Log Lookup + TestRail (optional — gracefully disabled when unconfigured)
+_log_lookup = LogLookupService()
+_testrail_client = TestRailClient()
+
+# Jira client for posting approved drafts
+_jira_client: Optional[JiraClient] = None
+try:
+    _jira_client = JiraClient()
+except Exception:
+    _jira_client = None
 
 # Notification service (optional — disabled when env vars are empty)
 _teams = TeamsNotifier(webhook_url=os.getenv("TEAMS_WEBHOOK_URL"))
@@ -113,7 +128,7 @@ async def health_check():
         "status": "healthy",
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "version": "0.5.0",
-        "drafts_in_store": len(draft_store),
+        "drafts_in_store": draft_store.count(),
         "notifications": {
             "teams": _teams.enabled,
             "email": _email.enabled,
@@ -214,8 +229,8 @@ async def handle_comment_event(event: JiraWebhookEvent):
     draft = drafter.draft(comment, classification, context)
     logger.info("Generated draft %s for %s", draft.draft_id, comment.issue_key)
 
-    # 5. Store
-    draft_store[draft.draft_id] = draft.model_dump(mode="json")
+    # 5. Store (persistent SQLite)
+    draft_store.save(draft, classification=classification.comment_type.value)
 
     # 6. Notify (Teams / Email — optional, fire-and-forget)
     notifier.notify_draft_generated(
@@ -242,7 +257,10 @@ def _collect_context_safe(issue_key: str):
     try:
         from src.agent.context_collector import ContextCollector
 
-        collector = ContextCollector()
+        collector = ContextCollector(
+            log_lookup=_log_lookup,
+            testrail_client=_testrail_client,
+        )
         return collector.collect(issue_key)
     except Exception as exc:
         logger.warning("Context collection skipped (%s) – using stub", exc)
@@ -272,44 +290,80 @@ async def get_draft(draft_id: str):
 
 
 @app.get("/drafts")
-async def list_drafts(issue_key: Optional[str] = None):
-    """List all drafts, optionally filtered by issue_key."""
-    drafts = list(draft_store.values())
-    if issue_key:
-        drafts = [d for d in drafts if d.get("issue_key") == issue_key]
-    return {"count": len(drafts), "drafts": drafts}
+async def list_drafts(
+    issue_key: Optional[str] = None,
+    status: Optional[str] = None,
+    limit: int = 100,
+    offset: int = 0,
+):
+    """List all drafts, optionally filtered by issue_key and/or status."""
+    drafts = draft_store.list_all(
+        issue_key=issue_key, status=status, limit=limit, offset=offset,
+    )
+    total = draft_store.count(issue_key=issue_key, status=status)
+    return {"count": len(drafts), "total": total, "drafts": drafts}
 
 #  Approval endpoint
 @app.post("/approve")
 async def approve_draft(request: Request):
     """
     Approve a draft response.
-    On approval the draft is marked and (optionally) posted to Jira.
+
+    1. Mark draft as APPROVED in SQLite.
+    2. Post the comment to Jira (if Jira client is configured).
+    3. Mark draft as POSTED in SQLite.
+    4. Send notification.
     """
     try:
         payload = await request.json()
         draft_id = payload.get("draft_id")
         approved_by = payload.get("approved_by")
+        post_to_jira = payload.get("post_to_jira", True)
 
-        if draft_id not in draft_store:
+        # Verify draft exists
+        draft_data = draft_store.get(draft_id)
+        if draft_data is None:
             raise HTTPException(status_code=404, detail="Draft not found")
 
-        draft_store[draft_id]["status"] = DraftStatus.APPROVED.value
-        draft_store[draft_id]["approved_by"] = approved_by
-        draft_store[draft_id]["approved_at"] = datetime.now(timezone.utc).isoformat()
+        # 1. Mark as approved
+        updated = draft_store.update_status(
+            draft_id, DraftStatus.APPROVED, approved_by=approved_by,
+        )
+        if not updated:
+            raise HTTPException(status_code=404, detail="Draft not found")
 
         logger.info("Draft %s approved by %s", draft_id, approved_by)
 
-        # Notify (Teams / Email)
+        issue_key = draft_data.get("issue_key", "")
+        jira_posted = False
+
+        # 2. Post to Jira (action executor)
+        if post_to_jira and _jira_client is not None:
+            try:
+                body = draft_data.get("body", "")
+                _jira_client.add_comment(issue_key, body)
+                draft_store.mark_posted(draft_id)
+                jira_posted = True
+                logger.info(
+                    "Draft %s posted to Jira %s", draft_id, issue_key,
+                )
+            except Exception as exc:
+                logger.error(
+                    "Failed to post draft %s to Jira: %s", draft_id, exc,
+                )
+
+        # 3. Notify (Teams / Email)
         notifier.notify_draft_approved(
             draft_id=draft_id,
-            issue_key=draft_store[draft_id].get("issue_key", ""),
+            issue_key=issue_key,
             approved_by=approved_by or "unknown",
         )
 
-        # TODO: Post comment to Jira via JiraClient.add_comment()
-
-        return {"status": "approved", "draft_id": draft_id}
+        return {
+            "status": "approved",
+            "draft_id": draft_id,
+            "posted_to_jira": jira_posted,
+        }
     except HTTPException:
         raise
     except Exception as e:
@@ -325,18 +379,22 @@ async def reject_draft(request: Request):
         draft_id = payload.get("draft_id")
         feedback = payload.get("feedback", "")
 
-        if draft_id not in draft_store:
+        draft_data = draft_store.get(draft_id)
+        if draft_data is None:
             raise HTTPException(status_code=404, detail="Draft not found")
 
-        draft_store[draft_id]["status"] = DraftStatus.REJECTED.value
-        draft_store[draft_id]["feedback"] = feedback
+        updated = draft_store.update_status(
+            draft_id, DraftStatus.REJECTED, feedback=feedback,
+        )
+        if not updated:
+            raise HTTPException(status_code=404, detail="Draft not found")
 
         logger.info("Draft %s rejected. Feedback: %s", draft_id, feedback)
 
         # Notify (Teams / Email)
         notifier.notify_draft_rejected(
             draft_id=draft_id,
-            issue_key=draft_store[draft_id].get("issue_key", ""),
+            issue_key=draft_data.get("issue_key", ""),
             feedback=feedback,
         )
 
