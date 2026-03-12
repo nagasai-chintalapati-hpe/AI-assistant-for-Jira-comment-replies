@@ -34,7 +34,7 @@ class WebhookIssueFields(BaseModel):
 
 class WebhookIssue(BaseModel):
     """Issue section of a Jira webhook event"""
-    id: str
+    id: Optional[str] = None
     key: str
     fields: WebhookIssueFields
 
