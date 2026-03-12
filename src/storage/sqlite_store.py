@@ -225,7 +225,11 @@ class SQLiteDraftStore:
         self._conn.commit()
         return result.rowcount > 0
 
-    # Housekeeping
+    def clear(self) -> int:
+        """Delete all drafts.  Returns the number removed."""
+        result = self._conn.execute("DELETE FROM drafts")
+        self._conn.commit()
+        return result.rowcount
 
     def close(self) -> None:
         """Close the database connection."""
