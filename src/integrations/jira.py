@@ -85,7 +85,7 @@ class JiraClient:
     def get_issue(self, issue_key: str) -> dict[str, Any]:
         """Get full issue JSON including all standard and custom fields."""
         try:
-            return self.client.issue(issue_key, expand="changelog")
+            return self.client.issue(issue_key)
         except Exception as e:
             logger.error("Error fetching issue %s: %s", issue_key, e)
             raise

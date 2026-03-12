@@ -158,16 +158,10 @@ class ResponseDrafter:
         # 3. Build citations from real evidence sources
         citations = self._build_citations(context)
 
-        # 4. Optionally refine with LLM
-        if self._provider == "copilot" and self._client:
-            refined = await self._refine_with_copilot(content)
-            if refined:
-                content = refined
-        elif self._provider in {"llama_cpp", "local", "openai_compat"}:
-            refined = await self._refine_with_local_llm(content)
-            if refined:
-                content = refined
+        # 4. Build evidence_used list from RAG snippets
+        evidence_used = self._build_evidence_used(context)
 
+        # 5. Assemble Draft
         return Draft(
             draft_id="draft_" + uuid.uuid4().hex[:12],
             issue_key=comment.issue_key,
@@ -177,8 +171,9 @@ class ResponseDrafter:
             body=content,
             status=DraftStatus.GENERATED,
             citations=citations,
-            suggested_actions=[{"action": a} for a in self._suggest_actions(classification)],
-            confidence_score=classification.confidence,
+            evidence_used=evidence_used or None,
+            classification_type=classification.comment_type.value,
+            classification_reasoning=classification.reasoning,
         )
 
     async def _refine_with_copilot(self, draft_text):
@@ -244,34 +239,30 @@ class ResponseDrafter:
         }
 
         try:
-            loop = asyncio.get_running_loop()
+            return template.format_map(subs)
+        except KeyError as exc:
+            logger.warning("Template substitution key missing: %s", exc)
+            return template  # return raw template on failure
 
-            def _do_request():
-                headers = {"Content-Type": "application/json"}
-                if self._llm_api_key:
-                    headers["Authorization"] = "Bearer " + self._llm_api_key
-                resp = requests.post(
-                    self._base_url + "/v1/chat/completions",
-                    json={
-                        "model": self._model,
-                        "messages": [
-                            {"role": "system", "content": _REFINE_SYSTEM},
-                            {"role": "user", "content": draft_text},
-                        ],
-                        "max_tokens": 512,
-                        "temperature": 0.3,
-                    },
-                    headers=headers,
-                    timeout=20,
-                )
-                resp.raise_for_status()
-                payload = resp.json()
-                return payload["choices"][0]["message"]["content"].strip()
-
-            return await loop.run_in_executor(None, _do_request)
-        except Exception as e:
-            logger.warning("Local LLM refinement failed: %s", e)
-            return None
+    #  Evidence & citation helpers   
+    @staticmethod
+    def _format_existing_evidence(context: ContextCollectionResult) -> str:
+        """Format attachments, Jenkins links, and RAG snippets as bullet list."""
+        lines: list[str] = []
+        if context.issue_context.attached_files:
+            for att in context.issue_context.attached_files[:5]:
+                name = att.get("filename") or att.get("name", "attachment")
+                lines.append(f"• Attachment: {name}")
+        if context.jenkins_links:
+            for url in context.jenkins_links[:3]:
+                lines.append(f"• Jenkins log: {url}")
+        if context.rag_snippets:
+            for snippet in context.rag_snippets[:3]:
+                source = snippet.source_title
+                score = f"{snippet.relevance_score:.0%}"
+                preview = snippet.content[:120].replace("\n", " ")
+                lines.append(f"• [{source}] ({score}): {preview}…")
+        return "\n".join(lines) if lines else "• (none collected yet)"
 
     @staticmethod
     def _build_citations(context):
@@ -325,12 +316,37 @@ class ResponseDrafter:
 
     @staticmethod
     def _build_citations(context: ContextCollectionResult) -> list[dict[str, str]]:
-        """Build citation list from Jenkins links and other sources."""
+        """Build citation list from Jenkins links, RAG snippets, and other sources."""
         citations: list[dict[str, str]] = []
         if context.jenkins_links:
             for url in context.jenkins_links:
                 citations.append({"source": "Jenkins", "url": url})
+        if context.rag_snippets:
+            for snippet in context.rag_snippets:
+                citation: dict[str, str] = {
+                    "source": snippet.source_title,
+                    "type": snippet.source_type,
+                }
+                if snippet.source_url:
+                    citation["url"] = snippet.source_url
+                citation["excerpt"] = snippet.content[:200]
+                citations.append(citation)
         return citations
+
+    @staticmethod
+    def _build_evidence_used(context: ContextCollectionResult) -> list[str]:
+        """Build a human-readable list of evidence sources used."""
+        evidence: list[str] = []
+        if context.jenkins_links:
+            for url in context.jenkins_links:
+                evidence.append(f"Jenkins log: {url}")
+        if context.rag_snippets:
+            for snippet in context.rag_snippets:
+                label = f"{snippet.source_type.title()}: {snippet.source_title}"
+                if snippet.relevance_score >= 0.5:
+                    label += f" (relevance: {snippet.relevance_score:.0%})"
+                evidence.append(label)
+        return evidence
 
     # Suggested labels & actions
 

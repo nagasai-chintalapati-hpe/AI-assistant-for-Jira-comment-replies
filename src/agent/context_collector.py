@@ -7,6 +7,7 @@ Collects:
   • Linked issues
   • Changelog (status transitions)
   • Jenkins console-log URLs (heuristic detection)
+  • RAG snippets (semantic search against indexed documents)
 """
 
 from __future__ import annotations
@@ -30,8 +31,13 @@ DEFAULT_COMMENT_COUNT = 10
 class ContextCollector:
     """Collects context from Jira and related systems."""
 
-    def __init__(self, jira_client: Optional[JiraClient] = None):
+    def __init__(
+        self,
+        jira_client: Optional[JiraClient] = None,
+        rag_engine=None,
+    ):
         self.jira_client = jira_client or JiraClient()
+        self._rag_engine = rag_engine
 
     # Public API
 
@@ -85,6 +91,13 @@ class ContextCollector:
                     timeout=10,
                 )
 
+            # 7. RAG snippets (semantic search against indexed docs)
+            rag_snippets = self._query_rag(
+                issue_key=issue_key,
+                summary=fields.get("summary", ""),
+                description=fields.get("description", "") or "",
+            )
+
             # Build IssueContext
             issue_context = IssueContext(
                 issue_key=issue_key,
@@ -109,7 +122,7 @@ class ContextCollector:
             return ContextCollectionResult(
                 issue_context=issue_context,
                 jenkins_links=jenkins_links or None,
-                jenkins_log_snippets=jenkins_log_snippets or None,
+                rag_snippets=rag_snippets or None,
                 collection_timestamp=datetime.now(timezone.utc),
                 collection_duration_ms=elapsed_ms,
             )
@@ -119,6 +132,28 @@ class ContextCollector:
             raise
 
     # Private helpers
+
+    def _query_rag(
+        self,
+        issue_key: str,
+        summary: str,
+        description: str,
+    ) -> list:
+        """Query the RAG engine for relevant snippets.
+
+        Builds a query from the issue summary + truncated description.
+        Returns an empty list if RAG is not configured or fails.
+        """
+        if self._rag_engine is None:
+            return []
+
+        query_text = f"{summary}. {description[:500]}" if description else summary
+        try:
+            result = self._rag_engine.query(text=query_text)
+            return result.snippets
+        except Exception as exc:
+            logger.warning("RAG query failed for %s: %s", issue_key, exc)
+            return []
 
     @staticmethod
     def _extract_versions(fields: dict) -> list[str]:

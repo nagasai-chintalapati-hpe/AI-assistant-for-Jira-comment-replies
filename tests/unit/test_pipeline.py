@@ -64,7 +64,6 @@ def _webhook_payload(
 
 # Health check
 
-
 class TestHealthCheck:
     def test_health(self):
         resp = client.get("/health")
@@ -75,7 +74,6 @@ class TestHealthCheck:
 
 
 # Webhook endpoint
-
 
 class TestWebhookEndpoint:
     def test_accepted_event_returns_processed(self):
@@ -220,6 +218,7 @@ class TestWebhookEndpoint:
 
 # Draft store
 
+# Draft store
 
 class TestDraftStore:
     def test_draft_stored_after_processing(self):
@@ -254,7 +253,6 @@ class TestDraftStore:
 
 
 # Approval
-
 
 class TestApproval:
     def test_approve_draft(self):

@@ -169,38 +169,66 @@ When `APPROVAL_API_KEY` is configured, include:
 ## Local Webhook Test
 
 ```bash
-payload='{"webhookEvent":"comment_created","timestamp":1700000001,"issue":{"id":"1","key":"DEFECT-500","fields":{"summary":"Upload crash","issuetype":{"name":"Bug"},"status":{"name":"Open"}}},"comment":{"id":"90001","body":"Cannot reproduce this on my machine.","author":{"accountId":"u1","displayName":"Dev","emailAddress":"dev@company.com"},"created":"2025-02-23T10:30:00.000+0000","updated":"2025-02-23T10:30:00.000+0000"}}'
-sig=$(printf '%s' "$payload" | openssl dgst -sha256 -hmac "$WEBHOOK_SECRET" -hex | sed 's/^.* //')
+# Simulate a "cannot reproduce" comment
+curl -X POST http://localhost:8000/webhook/jira \
+  -H "Content-Type: application/json" \
+  -d '{
+    "webhookEvent": "comment_created",
+    "timestamp": 1700000001,
+    "issue": {
+      "id": "1", "key": "DEFECT-500",
+      "fields": {
+        "summary": "Upload crash",
+        "issuetype": {"name": "Bug"},
+        "status": {"name": "Open"}
+      }
+    },
+    "comment": {
+      "id": "90001",
+      "body": "Cannot reproduce this on my machine.",
+      "author": {"accountId": "u1", "displayName": "Dev", "emailAddress": "dev@co.com"},
+      "created": "2025-02-23T10:30:00.000+0000",
+      "updated": "2025-02-23T10:30:00.000+0000"
+    }
+  }'
 
-curl -sS -X POST http://127.0.0.1:8000/webhook/jira \
-  -H 'Content-Type: application/json' \
-  -H "X-Hub-Signature-256: sha256=$sig" \
-  -d "$payload"
+# List drafts
+curl http://localhost:8000/drafts
+
+# Approve a draft
+curl -X POST http://localhost:8000/approve \
+  -H "Content-Type: application/json" \
+  -d '{"draft_id": "<DRAFT_ID>", "approved_by": "qa@company.com"}'
+
+# Ingest a text document into RAG
+curl -X POST http://localhost:8000/rag/ingest/text \
+  -H "Content-Type: application/json" \
+  -d '{"title": "Auth Runbook", "text": "Check SSO config when login fails...", "source_type": "runbook"}'
+
+# Search the RAG index
+curl "http://localhost:8000/rag/search?q=login+failure&top_k=3"
+
+# RAG collection stats
+curl http://localhost:8000/rag/stats
 ```
 
-Fetch drafts for an issue:
+## Optional: RAG Dependencies
+
+The RAG engine and document ingestion pipeline require additional packages
+that are **not** installed by default (they are only needed if you use the
+`/rag/*` endpoints):
 
 ```bash
-curl -sS 'http://127.0.0.1:8000/drafts?issue_key=DEFECT-500'
+pip install chromadb sentence-transformers pypdf
 ```
 
-Approve a draft:
+- **chromadb** — vector store for semantic retrieval
+- **sentence-transformers** — embedding model (`all-MiniLM-L6-v2`)
+- **pypdf** — PDF text extraction
 
-```bash
-curl -sS -X POST http://127.0.0.1:8000/approve \
-  -H 'Content-Type: application/json' \
-  -H "X-Approval-Token: $APPROVAL_API_KEY" \
-  -d '{"draft_id":"<DRAFT_ID>","approved_by":"qa@company.com"}'
-```
-
-## Jira Webhook Setup
-
-1. Jira Settings → System → Webhooks
-2. Create webhook URL: `https://<host>/webhook/jira`
-3. Select comment events (`comment_created`, `comment_updated`)
-4. Save
-
-For local testing, expose port 8000 with ngrok and use the ngrok HTTPS URL.
+The core pipeline (webhook → classify → context → draft) works without
+these packages.  Tests mock all heavy dependencies so `pytest` runs
+without installing them.
 
 ## Troubleshooting
 

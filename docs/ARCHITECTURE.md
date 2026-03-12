@@ -93,6 +93,12 @@
   - `GET /drafts/{draft_id}` — Retrieve a specific draft
   - `POST /approve` — Approve a draft
   - `POST /reject` — Reject a draft with feedback
+  - `POST /rag/ingest/pdf` — Upload and ingest a PDF
+  - `POST /rag/ingest/text` — Ingest raw text
+  - `POST /rag/ingest/confluence` — Sync Confluence pages
+  - `GET /rag/search` — Semantic search over indexed docs
+  - `GET /rag/stats` — RAG collection statistics
+  - `DELETE /rag/document/{source_title}` — Remove an indexed document
 
 ### 2. Event Filter (`src/api/event_filter.py`)
 - Stateful filter with in-memory idempotency set
@@ -117,13 +123,14 @@
 - Calls `JiraClient` to gather full issue context
 - Builds `IssueContext` with fields, comments, attachments, links, changelog
 - Detects Jenkins console-log URLs
-- Returns `ContextCollectionResult` with timing metrics
-- Extensible with RAG snippets, log entries, TestRail results, build metadata
+- Queries RAG engine for relevant document snippets (when configured)
+- Returns `ContextCollectionResult` with timing metrics, RAG snippets, and evidence pointers
 
 ### 5. Response Drafter (`src/agent/drafter.py`)
 - One template per classification bucket (8 templates)
 - Safe `format_map` substitution with context-derived values
 - Helpers: `_find_related_ticket`, `_find_blocking_item` for linked issue references
+- Includes RAG snippets in evidence formatting, citations, and `evidence_used` tracking
 - Optional Copilot SDK refinement for natural language polish
 - Generates citations, evidence tracking, suggested labels, and suggested actions
 
@@ -145,6 +152,29 @@
 - Indexed on `issue_key`, `status`, `created_at`
 - WAL journal mode for concurrent reads
 - Full Draft JSON stored alongside indexed columns
+
+### 9. RAG Engine (`src/rag/engine.py`)
+- ChromaDB-backed vector store for semantic document retrieval
+- Sentence-transformer embeddings (default: `all-MiniLM-L6-v2`)
+- `add_chunks` — upsert document chunks into the collection
+- `query` — semantic search with optional source_type filter, returns ranked `RAGResult`
+- `delete_by_source` / `delete_by_id` — remove indexed documents
+- `stats` — collection size, source distribution, config info
+- Cosine similarity scoring (distance → relevance conversion)
+
+### 10. Document Ingester (`src/rag/ingest.py`)
+- Sliding-window text chunking with configurable size and overlap
+- Prefers paragraph and sentence boundary breaks when splitting
+- `ingest_pdf` — parses PDF via pypdf, chunks, and indexes
+- `ingest_text` — chunks raw text and indexes with metadata
+- `ingest_confluence_page` — fetches Confluence page content, chunks, and indexes
+
+### 11. Confluence Client (`src/integrations/confluence.py`)
+- Wraps `atlassian-python-api` Confluence client
+- `get_page` — fetch page by ID with storage body
+- `get_page_content_as_text` — strip HTML to plain text for chunking
+- `search_pages` — CQL search by space and/or label
+- HTML-to-text conversion with entity decoding, script removal, whitespace normalisation
 
 ## Data Models (`src/models/`)
 
