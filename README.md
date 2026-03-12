@@ -63,6 +63,25 @@ An AI assistant that generates context-aware draft replies to developer comments
 - [x] Drafter integration — RAG snippets in evidence formatting, citations, and evidence tracking
 - [x] **Final:** 211 unit + integration tests, 82% code coverage
 
+### MVP v2 — Phase 3: TestRail & Jenkins Log Integration
+- [x] `TestRailClient` — API key + session-cookie auth, get_run, get_run_summary, failed tests
+- [x] `LogLookupService` — Jenkins console fetch, local file grep, build metadata extraction
+- [x] Context collector — detects TestRail run IDs from issue text, fetches summaries; fetches Jenkins console logs for detected URLs
+- [x] Drafter — TestRail pass-rate and failed tests in evidence, retest checklist, build metadata in citations
+- [x] Tests — `test_testrail.py`, `test_log_lookup.py`, updated context/drafter tests
+- [x] **Final:** 331 unit + integration tests passing
+
+### MVP v2 — Phase 4: Git PR Metadata + ELK/OpenSearch Logs
+- [x] `GitConfig` + `ELKConfig` — centralised settings for Git provider and ELK cluster
+- [x] `GitPRMetadata` model — pr_number, pr_title, pr_url, state, merged, merge_commit_sha, head/base branch, author, timestamps
+- [x] `GitClient` — GitHub / GitLab / Bitbucket REST API client; `get_pr`, `get_pr_by_branch`, `detect_pr_refs`, `fetch_prs_for_issue`
+- [x] `LogLookupService` extended — ELK backend with `search_elk_logs`, Elasticsearch Query DSL builder, response parser, API-key + Basic auth
+- [x] `ContextCollector` — `_fetch_git_prs` (PR ref detection from issue + comments), `_fetch_elk_logs` (summary-based ELK query); `git_prs` + `elk_log_entries` in `ContextCollectionResult`
+- [x] Drafter — `_format_pr_evidence`, `_format_elk_preview`; PR + ELK in existing evidence, citations, and evidence_used; CANNOT_REPRODUCE + FIXED_VALIDATE templates surface PR commit + branch
+- [x] `app.py` — `GitClient` wired in, health endpoint now reports `git` + `elk` integration status; version bumped to 0.6.0
+- [x] Tests — `test_git_client.py` (37 tests), `test_elk_lookup.py` (19 tests)
+- [x] **Final:** 352 unit + integration tests passing, 81% code coverage
+
 ## Architecture
 
 ```
