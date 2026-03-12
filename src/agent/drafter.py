@@ -1,4 +1,4 @@
-"""Draft generator – creates responses using templates + Copilot SDK.
+"""Draft generator -- creates evidence-based responses from Jira context.
 
 Flow:
   1. Select a response template based on the classification bucket.
@@ -9,13 +9,18 @@ Flow:
 
 from __future__ import annotations
 
-import json
+import asyncio
 import logging
+import os
+import re
+import uuid
 from datetime import datetime, timezone
-from typing import Optional
+from typing import Any, Optional
 
-from src.models.comment import Comment
+import requests
+
 from src.models.classification import CommentClassification, CommentType
+from src.models.comment import Comment
 from src.models.context import ContextCollectionResult
 from src.models.draft import Draft, DraftStatus
 
@@ -111,40 +116,46 @@ Output ONLY the refined reply – no markdown code fences, no explanation.
 
 
 class ResponseDrafter:
-    """Generates draft responses using templates + optional Copilot SDK refinement."""
+    """Generates evidence-based draft responses with optional LLM refinement."""
 
-    def __init__(self, api_key: Optional[str] = None, model: str = "gpt-4"):
+    def __init__(
+        self,
+        api_key=None,
+        model="claude-sonnet-4.5",
+        provider=None,
+        base_url=None,
+        llm_api_key=None,
+        github_token=None,
+    ):
         self._client = None
         self._model = model
-        if api_key:
+        self._provider = (provider or os.getenv("LLM_PROVIDER", "copilot")).lower()
+        self._base_url = (base_url or os.getenv("LLM_BASE_URL", "http://localhost:8080")).rstrip("/")
+        self._llm_api_key = llm_api_key or os.getenv("LLM_API_KEY", "")
+
+        token = github_token or api_key
+        if self._provider == "copilot" and token:
             try:
-                from openai import OpenAI  # Copilot SDK compatible client
+                from copilot import CopilotClient
+                self._client = CopilotClient({"github_token": token})
+                logger.info("Copilot SDK drafter initialized (model=%s)", model)
+            except ImportError:
+                logger.warning("copilot SDK not available; using template-only mode")
+        elif self._provider in {"llama_cpp", "local", "openai_compat"}:
+            logger.info(
+                "Local LLM provider enabled for drafter (provider=%s, base=%s)",
+                self._provider, self._base_url,
+            )
 
-                self._client = OpenAI(api_key=api_key)
-                logger.info("Copilot SDK drafter initialised (model=%s)", model)
-            except Exception as exc:
-                logger.warning("Could not initialise Copilot SDK drafter: %s", exc)
+    async def draft(self, comment, classification, context):
+        """Generate an evidence-based draft response."""
+        # 1. Extract structured evidence from context
+        evidence = _Evidence(comment, classification, context)
 
-    #  Public API                                                         #
-    def draft(
-        self,
-        comment: Comment,
-        classification: CommentClassification,
-        context: ContextCollectionResult,
-    ) -> Draft:
-        """Generate a draft response to a comment."""
+        # 2. Build draft body from evidence
+        content = _DraftBuilder(evidence).build()
 
-        # 1. Template-fill
-        template_body = self._fill_template(comment, classification, context)
-
-        # 2. Optional Copilot SDK refinement
-        if self._client is not None:
-            refined = self._refine_with_copilot(template_body, comment)
-            draft_body = refined or template_body
-        else:
-            draft_body = template_body
-
-        # 3. Build citations from context
+        # 3. Build citations from real evidence sources
         citations = self._build_citations(context)
 
         # 4. Build evidence_used list from RAG snippets
@@ -152,46 +163,42 @@ class ResponseDrafter:
 
         # 5. Assemble Draft
         return Draft(
-            draft_id=f"draft_{int(datetime.now(timezone.utc).timestamp())}",
+            draft_id="draft_" + uuid.uuid4().hex[:12],
             issue_key=comment.issue_key,
             in_reply_to_comment_id=comment.comment_id,
             created_at=datetime.now(timezone.utc),
             created_by="system",
-            body=draft_body,
+            body=content,
             status=DraftStatus.GENERATED,
-            suggested_actions=self._suggest_actions(classification),
-            suggested_labels=self._suggest_labels(classification),
-            confidence_score=classification.confidence,
             citations=citations,
             evidence_used=evidence_used or None,
             classification_type=classification.comment_type.value,
             classification_reasoning=classification.reasoning,
         )
 
-    #  Copilot SDK refinement     
-    def _refine_with_copilot(self, draft_text: str, comment: Comment) -> Optional[str]:
-        """Optionally polish the template-filled draft with Copilot SDK."""
+    async def _refine_with_copilot(self, draft_text):
+        """Refine draft using Copilot SDK session."""
+        session = None
         try:
-            response = self._client.chat.completions.create(  # type: ignore[union-attr]
-                model=self._model,
-                messages=[
-                    {"role": "system", "content": _REFINE_SYSTEM},
-                    {
-                        "role": "user",
-                        "content": (
-                            f"Original developer comment on {comment.issue_key}:\n"
-                            f'"""\n{comment.body}\n"""\n\n'
-                            f"DRAFT reply:\n"
-                            f'"""\n{draft_text}\n"""'
-                        ),
-                    },
-                ],
-                max_tokens=512,
-                temperature=0.3,
-            )
-            return response.choices[0].message.content.strip()
-        except Exception as exc:
-            logger.warning("Copilot SDK refinement failed: %s", exc)
+            session = await self._client.create_session({
+                "model": self._model,
+                "available_tools": [],
+                "system_message": {
+                    "mode": "replace",
+                    "content": _REFINE_SYSTEM,
+                },
+            })
+
+            response = await session.send_and_wait({
+                "prompt": draft_text,
+            })
+
+            if not response or not response.data or not response.data.content:
+                return None
+
+            return response.data.content.strip()
+        except Exception as e:
+            logger.warning("Copilot refinement failed: %s", e)
             return None
     
     #  Template filling                                                
@@ -258,11 +265,37 @@ class ResponseDrafter:
         return "\n".join(lines) if lines else "• (none collected yet)"
 
     @staticmethod
-    def _format_missing(classification: CommentClassification) -> str:
-        """Format missing context items as bullet list."""
-        if not classification.missing_context:
-            return "• (nothing flagged)"
-        return "\n".join(f"• {item}" for item in classification.missing_context)
+    def _build_citations(context):
+        """Build citations list from real evidence sources."""
+        citations = []
+        issue = context.issue_context if context else None
+
+        if issue and issue.attached_files:
+            for att in issue.attached_files[:5]:
+                citations.append({
+                    "source": "Attachment: " + att.get("filename", "unknown"),
+                    "url": att.get("content_url", ""),
+                    "excerpt": att.get("mime_type", "") + " (" + str(att.get("size", 0)) + " bytes)",
+                })
+
+        if context and context.jenkins_links:
+            snippets = context.jenkins_log_snippets or {}
+            for link in context.jenkins_links[:3]:
+                snippet = snippets.get(link, "")
+                excerpt = snippet[-500:] if snippet else "Console output from CI build"
+                citations.append({
+                    "source": "Jenkins Build Log",
+                    "url": link,
+                    "excerpt": excerpt,
+                })
+
+        if issue and issue.linked_issues:
+            for li in issue.linked_issues[:3]:
+                citations.append({
+                    "source": "Linked Issue: " + li.get("key", ""),
+                    "url": "",
+                    "excerpt": li.get("type", "") + " - " + li.get("status", ""),
+                })
 
     @staticmethod
     def _find_related_ticket(ctx) -> str:
@@ -353,7 +386,4 @@ class ResponseDrafter:
             CommentType.BLOCKED_WAITING: "blocked",
             CommentType.CONFIG_ISSUE: "config-issue",
         }
-        if classification.comment_type in label_map:
-            labels.append(label_map[classification.comment_type])
-
-        return labels
+        return mapping.get(classification.comment_type, [])
