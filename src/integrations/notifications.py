@@ -22,22 +22,34 @@ import requests
 logger = logging.getLogger(__name__)
 
 
-#  Teams Webhook Notifier    
+# Teams Webhook Notifier
 class TeamsNotifier:
-    """Send adaptive-card style notifications to a Microsoft Teams channel
+    """Send AdaptiveCard notifications to a Microsoft Teams channel
     via an incoming webhook URL.
+
+    Cards include direct ``Action.OpenUrl`` buttons to the Draft Review UI
+    and the Jira ticket.  (``Action.OpenUrl`` is compatible with plain
+    incoming webhooks; no bot registration required.)
     """
 
-    def __init__(self, webhook_url: Optional[str] = None):
+    def __init__(
+        self,
+        webhook_url: Optional[str] = None,
+        app_base_url: Optional[str] = None,
+        jira_base_url: Optional[str] = None,
+    ):
+        from src.config import settings as _settings
         self._url = webhook_url
+        self._app_base_url = (app_base_url or _settings.app.base_url).rstrip("/")
+        self._jira_base_url = (jira_base_url or _settings.jira.base_url).rstrip("/")
         if self._url:
-            logger.info("Teams notifier initialised")
+            logger.info("Teams notifier initialised (AdaptiveCard format)")
 
     @property
     def enabled(self) -> bool:
         return bool(self._url)
-    
-    #  Public helpers    
+
+    # Public API
     def notify_draft_generated(
         self,
         draft_id: str,
@@ -46,16 +58,18 @@ class TeamsNotifier:
         confidence: float,
         body_preview: str,
     ) -> bool:
-        """Send a 'new draft' card to Teams."""
-        card = self._build_card(
-            title=f" New Draft — {issue_key}",
+        """Send a ‘new draft’ AdaptiveCard to Teams with Review + Jira action buttons."""
+        card = self._build_adaptive_card(
+            title=f"🤖 New Draft — {issue_key}",
             facts={
                 "Draft ID": draft_id,
-                "Classification": classification,
+                "Classification": classification.replace("_", " ").title(),
                 "Confidence": f"{confidence:.0%}",
             },
             body=body_preview[:500],
-            color="0078D7",
+            style="accent",
+            draft_id=draft_id,
+            issue_key=issue_key,
         )
         return self._send(card)
 
@@ -65,15 +79,17 @@ class TeamsNotifier:
         issue_key: str,
         approved_by: str,
     ) -> bool:
-        """Send an 'approved' card to Teams."""
-        card = self._build_card(
+        """Send an ‘approved’ AdaptiveCard to Teams."""
+        card = self._build_adaptive_card(
             title=f"Draft Approved — {issue_key}",
             facts={
                 "Draft ID": draft_id,
                 "Approved by": approved_by,
             },
-            body="The draft has been approved and is ready to post.",
-            color="00C851",
+            body="The draft has been approved and posted to Jira.",
+            style="good",
+            draft_id=draft_id,
+            issue_key=issue_key,
         )
         return self._send(card)
 
@@ -83,40 +99,91 @@ class TeamsNotifier:
         issue_key: str,
         feedback: str,
     ) -> bool:
-        """Send a 'rejected' card to Teams."""
-        card = self._build_card(
-            title=f" Draft Rejected — {issue_key}",
+        """Send a ‘rejected’ AdaptiveCard to Teams."""
+        card = self._build_adaptive_card(
+            title=f"Draft Rejected — {issue_key}",
             facts={
                 "Draft ID": draft_id,
                 "Feedback": feedback or "(none)",
             },
             body="The draft was rejected. See feedback above.",
-            color="FF4444",
+            style="attention",
+            draft_id=draft_id,
+            issue_key=issue_key,
         )
         return self._send(card)
-    
-    #  Internals 
-    @staticmethod
-    def _build_card(
+
+    # Internals
+    def _build_adaptive_card(
+        self,
         title: str,
         facts: dict[str, str],
         body: str,
-        color: str = "0078D7",
+        style: str = "accent",   # "accent"|"good"|"attention"|"warning"|"default"
+        draft_id: str = "",
+        issue_key: str = "",
     ) -> dict[str, Any]:
-        """Build a Teams MessageCard payload."""
+        """Build a Teams AdaptiveCard payload.
+
+        Uses ``application/vnd.microsoft.card.adaptive`` format (supersedes the
+        legacy ``MessageCard``).  Actions use ``Action.OpenUrl`` — compatible
+        with plain incoming webhooks without a registered bot.
+        """
+        card_body: list[dict] = [
+            {
+                "type": "Container",
+                "style": style,
+                "items": [
+                    {
+                        "type": "TextBlock",
+                        "text": title,
+                        "weight": "Bolder",
+                        "size": "Medium",
+                        "wrap": True,
+                    },
+                    {
+                        "type": "FactSet",
+                        "facts": [
+                            {"title": k, "value": v} for k, v in facts.items()
+                        ],
+                    },
+                ],
+            },
+            {
+                "type": "TextBlock",
+                "text": body,
+                "wrap": True,
+                "spacing": "Medium",
+            },
+        ]
+
+        actions: list[dict] = []
+        if draft_id and self._app_base_url:
+            actions.append({
+                "type": "Action.OpenUrl",
+                "title": "📋 Review Draft",
+                "url": f"{self._app_base_url}/ui/drafts/{draft_id}",
+            })
+        if issue_key and self._jira_base_url:
+            actions.append({
+                "type": "Action.OpenUrl",
+                "title": "🔗 Open in Jira",
+                "url": f"{self._jira_base_url}/browse/{issue_key}",
+            })
+
         return {
-            "@type": "MessageCard",
-            "@context": "https://schema.org/extensions",
-            "themeColor": color,
-            "summary": title,
-            "sections": [
+            "type": "message",
+            "attachments": [
                 {
-                    "activityTitle": title,
-                    "facts": [
-                        {"name": k, "value": v} for k, v in facts.items()
-                    ],
-                    "text": body,
-                    "markdown": True,
+                    "contentType": "application/vnd.microsoft.card.adaptive",
+                    "contentUrl": None,
+                    "content": {
+                        "$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
+                        "type": "AdaptiveCard",
+                        "version": "1.4",
+                        "body": card_body,
+                        "actions": actions,
+                    },
                 }
             ],
         }
@@ -140,7 +207,7 @@ class TeamsNotifier:
             logger.warning("Teams notification failed: %s", exc)
             return False
 
-#  Email (SMTP) Notifier        
+# Email Notifier
 class EmailNotifier:
     """Send plain-text + HTML email notifications via SMTP."""
 
@@ -168,7 +235,7 @@ class EmailNotifier:
     def enabled(self) -> bool:
         return bool(self._host and self._from and self._to)
 
-    #  Public helpers  
+    # Public API
     def notify_draft_generated(
         self,
         draft_id: str,
@@ -218,7 +285,7 @@ class EmailNotifier:
         )
         return self._send_email(subject, html)
 
-    #  Internals 
+    # Internals
     def _send_email(self, subject: str, html_body: str) -> bool:
         """Send an HTML email via SMTP."""
         if not self.enabled:
@@ -252,10 +319,7 @@ class EmailNotifier:
             return False
 
 
-# ===================================================================== #
-#  Unified Notifier Facade                                               #
-# ===================================================================== #
-
+# Notification Facade
 class NotificationService:
     """Facade that fans out to Teams + Email (both optional)."""
 
