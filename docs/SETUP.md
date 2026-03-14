@@ -156,52 +156,6 @@ open htmlcov/index.html
 > ```
 > Then use the ngrok URL in the Jira webhook configuration.
 
-## Testing with curl
-
-```bash
-# Simulate a "cannot reproduce" comment
-curl -X POST http://localhost:8000/webhook/jira \
-  -H "Content-Type: application/json" \
-  -d '{
-    "webhookEvent": "comment_created",
-    "timestamp": 1700000001,
-    "issue": {
-      "id": "1", "key": "DEFECT-500",
-      "fields": {
-        "summary": "Upload crash",
-        "issuetype": {"name": "Bug"},
-        "status": {"name": "Open"}
-      }
-    },
-    "comment": {
-      "id": "90001",
-      "body": "Cannot reproduce this on my machine.",
-      "author": {"accountId": "u1", "displayName": "Dev", "emailAddress": "dev@co.com"},
-      "created": "2025-02-23T10:30:00.000+0000",
-      "updated": "2025-02-23T10:30:00.000+0000"
-    }
-  }'
-
-# List drafts
-curl http://localhost:8000/drafts
-
-# Approve a draft
-curl -X POST http://localhost:8000/approve \
-  -H "Content-Type: application/json" \
-  -d '{"draft_id": "<DRAFT_ID>", "approved_by": "qa@company.com"}'
-
-# Ingest a text document into RAG
-curl -X POST http://localhost:8000/rag/ingest/text \
-  -H "Content-Type: application/json" \
-  -d '{"title": "Auth Runbook", "text": "Check SSO config when login fails...", "source_type": "runbook"}'
-
-# Search the RAG index
-curl "http://localhost:8000/rag/search?q=login+failure&top_k=3"
-
-# RAG collection stats
-curl http://localhost:8000/rag/stats
-```
-
 ## Optional: RAG Dependencies
 
 The RAG engine and document ingestion pipeline require additional packages
@@ -219,6 +173,53 @@ pip install chromadb sentence-transformers pypdf
 The core pipeline (webhook → classify → context → draft) works without
 these packages.  Tests mock all heavy dependencies so `pytest` runs
 without installing them.
+
+## Production Deployment (Docker)
+
+The team never runs uvicorn manually. Docker handles starting, stopping, and
+auto-restarting the service — including after server reboots.
+
+### One-time setup on the server
+
+```bash
+# 1. Clone and enter the project
+git clone <repo-url> && cd AI-assistant-for-Jira-comment-replies
+
+# 2. Copy and fill in secrets
+cp .env.example .env
+nano .env   # set JIRA_BASE_URL, JIRA_USERNAME, JIRA_API_TOKEN, etc.
+
+# 3. Build and start (runs in the background forever)
+docker compose up -d --build
+```
+
+That's it. The container:
+- **Auto-restarts** if it crashes (`restart: unless-stopped`)
+- **Survives reboots** — Docker daemon starts it automatically on boot
+- **Persists data** — the SQLite draft store and ChromaDB live in a Docker volume
+
+### Day-to-day operations
+
+| Task | Command |
+|---|---|
+| View live logs | `docker compose logs -f` |
+| Check health | `curl http://localhost:8000/health` |
+| Open Review UI | `http://<server-ip>:8000/ui` |
+| Deploy a new version | `git pull && docker compose up -d --build` |
+| Stop | `docker compose down` |
+| Stop + wipe data | `docker compose down -v` |
+
+### Register the Jira webhook (one-time per Jira project)
+
+1. Jira → **Settings → System → WebHooks → Create WebHook**
+2. **URL**: `https://<your-server>/webhook/jira`
+3. **Events**: ☑ Issue → **Comment created**
+4. Save
+
+After that every real comment on any Jira issue flows through the pipeline
+automatically — no scripts, no manual steps, no intervention required.
+
+---
 
 ## Troubleshooting
 

@@ -4,172 +4,127 @@
 
 ```
 1. Jira Webhook Event (comment_created / comment_updated)
-   └─▶ FastAPI Webhook Receiver
+   └─▶ FastAPI Webhook Receiver  (POST /webhook/jira)
 
-2. Event Filtering
-   ├─▶ Event type gate (comment_created, comment_updated, jira:issue_updated)
-   ├─▶ Idempotency check (dedup by event ID)
-   ├─▶ Issue type gate (Bug / Defect only)
-   ├─▶ Status gate (Open, In Progress, Ready for QA, Reopened, To Do, In Review)
-   └─▶ Keyword heuristic gate (trigger keywords in comment body)
+2. Event Filtering  (src/api/event_filter.py)
+   ├─▶ Event type gate        — comment_created, comment_updated only
+   ├─▶ Idempotency check      — dedup by deterministic event ID
+   ├─▶ Issue type gate        — Bug / Defect only
+   └─▶ Status gate            — Open, In Progress, Ready for QA, Reopened,
+                                To Do, In Review, Cannot Reproduce,
+                                Closed, Resolved, Done, …
 
-3. Classification
-   ├─▶ Copilot SDK structured classification (if API key configured)
-   └─▶ Keyword fallback (always available)
-   └─▶ 8 buckets: Cannot Repro | Need Info | Fixed Validate | By Design
-                   | Duplicate/Fixed | Blocked/Waiting | Config Issue | Other
+3. Classification  (src/agent/classifier.py)
+   ├─▶ Local LLM / Copilot SDK  (if configured)
+   └─▶ Keyword fallback         (always available)
+   Buckets: cannot_reproduce | need_more_info | fixed_validate | by_design
+            | duplicate_fixed | blocked_waiting | config_issue | other
 
-4. Context Collection
-   ├─▶ Issue fields (summary, description, environment, versions, components)
-   ├─▶ Last N comments (default 10)
-   ├─▶ Attachment metadata
-   ├─▶ Linked issues
-   ├─▶ Changelog (status transitions)
-   ├─▶ Jenkins console-log URL detection
-   ├─▶ RAG snippets (Confluence + PDFs)         
-   ├─▶ Log entries (Jenkins / ELK / file)        
-   ├─▶ TestRail results                          
-   └─▶ Build pipeline metadata                   
+4. Context Collection  (src/agent/context_collector.py)
+   ├─▶ Jira API        — issue fields, comments, attachments, links, changelog
+   ├─▶ TestRail        — run summaries detected from R<id> references in issue text
+   ├─▶ Git             — PR metadata detected from PR URLs in issue text
+   ├─▶ RAG engine      — semantic search over indexed Confluence / PDFs
+   ├─▶ Log lookup      — Jenkins console logs / local log files
+   ├─▶ ELK             — OpenSearch / Elasticsearch log queries
+   └─▶ S3              — build artifact fetch by detected build ID
 
-5. Draft Generation
-   ├─▶ Template selection (by classification bucket — 8 templates)
-   ├─▶ Template variable substitution (from context)
-   ├─▶ Optional Copilot SDK / local LLM refinement
-   ├─▶ Citation extraction + evidence tracking
-   └─▶ Suggested labels + actions
+5. Draft Generation  (src/agent/drafter.py)
+   ├─▶ Template selection  (one per bucket, 8 total)
+   ├─▶ Variable substitution from collected context
+   ├─▶ Optional LLM refinement
+   ├─▶ Hallucination detection
+   └─▶ Citation + evidence tracking, suggested labels + actions
 
-6. Storage & Approval
-   ├─▶ SQLite persistent draft store
-   ├─▶ GET /drafts, GET /drafts/{id}
-   ├─▶ POST /approve → marks draft approved
-   └─▶ POST /reject → marks draft rejected with feedback
+6. Storage & Human-in-the-Loop Approval
+   ├─▶ SQLite draft store (persistent)
+   ├─▶ Review UI  GET /ui  — list, filter, view drafts
+   ├─▶ POST /approve  → posts approved comment back to Jira
+   └─▶ POST /reject   → stores feedback
 
-7. Notifications (optional)
-   ├─▶ Teams webhook → MessageCard per event (generated / approved / rejected)
-   └─▶ Email (SMTP) → HTML summary per event
+7. Notifications 
+   ├─▶ Teams  — AdaptiveCard via incoming webhook
+   └─▶ Email  — HTML summary via SMTP
 ```
 
 ## Components
 
-### 1. Webhook Receiver (`src/api/app.py`)
-- FastAPI server listening for Jira webhook events
-- Parses payload into `JiraWebhookEvent` (Pydantic model)
-- Orchestrates the full pipeline: filter → classify → context → draft → store
-- Endpoints:
-  - `POST /webhook/jira` — Receive and process comment events
-  - `GET /health` — Health check
-  - `GET /drafts` — List all drafts (filter by `?issue_key=`)
-  - `GET /drafts/{draft_id}` — Retrieve a specific draft
-  - `POST /approve` — Approve a draft
-  - `POST /reject` — Reject a draft with feedback
-  - `POST /rag/ingest/pdf` — Upload and ingest a PDF
-  - `POST /rag/ingest/text` — Ingest raw text
-  - `POST /rag/ingest/confluence` — Sync Confluence pages
-  - `GET /rag/search` — Semantic search over indexed docs
-  - `GET /rag/stats` — RAG collection statistics
-  - `DELETE /rag/document/{source_title}` — Remove an indexed document
+### Webhook Receiver (`src/api/app.py`)
+FastAPI server. Parses Jira payloads, runs the full pipeline, serves the Review UI.
 
-### 2. Event Filter (`src/api/event_filter.py`)
-- Stateful filter with in-memory idempotency set
-- Six gate rules applied in sequence
-- Returns `FilterResult(accepted, reason, event_id)`
-- Trigger keywords cover all 8 classification buckets
+Key endpoints:
 
-### 3. Comment Classifier (`src/agent/classifier.py`)
-- Two-tier classification: Copilot SDK → keyword fallback
-- 8 classification buckets:
-  - `cannot_reproduce` — Developer cannot reproduce the issue
-  - `need_more_info` — Requesting logs, environment details, or other info
-  - `fixed_validate` — Fix ready, needs validation
-  - `by_design` — Behavior is by design / expected
-  - `duplicate_fixed` — Duplicate or already fixed in another ticket
-  - `blocked_waiting` — Blocked by dependency or waiting for something
-  - `config_issue` — Configuration / setup issue, not a code defect
-  - `other` — Fallback
-- Returns `CommentClassification` with confidence, reasoning, missing context, suggested questions
+| Method | Path | Purpose |
+|---|---|---|
+| `POST` | `/webhook/jira` | Receive Jira comment events |
+| `GET` | `/health` | Health + integration status |
+| `GET` | `/ui` | Draft Review UI (list) |
+| `GET` | `/ui/drafts/{id}` | Draft detail + approve/reject |
+| `GET/POST` | `/drafts`, `/drafts/{id}` | JSON API for drafts |
+| `POST` | `/approve`, `/reject` | Programmatic approve/reject |
+| `POST` | `/rag/ingest/*` | Ingest PDF / text / Confluence |
+| `GET` | `/rag/search`, `/rag/stats` | RAG query + stats |
 
-### 4. Context Collector (`src/agent/context_collector.py`)
-- Calls `JiraClient` to gather full issue context
-- Builds `IssueContext` with fields, comments, attachments, links, changelog
-- Detects Jenkins console-log URLs
-- Queries RAG engine for relevant document snippets (when configured)
-- Returns `ContextCollectionResult` with timing metrics, RAG snippets, and evidence pointers
+### Event Filter (`src/api/event_filter.py`)
+Five gates: event type → idempotency → issue type → status → issue/comment presence.
+Keyword matching is informational only — used by the classifier, not as a gate.
 
-### 5. Response Drafter (`src/agent/drafter.py`)
-- One template per classification bucket (8 templates)
-- Safe `format_map` substitution with context-derived values
-- Helpers: `_find_related_ticket`, `_find_blocking_item` for linked issue references
-- Includes RAG snippets in evidence formatting, citations, and `evidence_used` tracking
-- Optional Copilot SDK refinement for natural language polish
-- Generates citations, evidence tracking, suggested labels, and suggested actions
+### Comment Classifier (`src/agent/classifier.py`)
+Two-tier: LLM → keyword fallback. Returns `CommentClassification` with confidence, reasoning, missing context, and suggested questions.
 
-### 6. Jira Client (`src/integrations/jira.py`)
-- Wraps `atlassian-python-api` for Jira Cloud REST API
-- Read: get_issue, get_comments, get_last_comments, get_attachments, get_linked_issues, get_changelog, detect_jenkins_links
-- Write: add_comment, update_custom_field, add_label, transition_issue
+### Context Collector (`src/agent/context_collector.py`)
+Orchestrates all external API calls. Returns `ContextCollectionResult` with issue context, TestRail results, Git PRs, RAG snippets, log entries, and collection timing.
+- TestRail: detects `R<id>` / `run/<id>` patterns in issue text/comments
+- Git PRs: detects PR URLs and branch names containing the issue key
 
-### 7. Notification Service (`src/integrations/notifications.py`)
-- **TeamsNotifier** — Posts MessageCard JSON to an incoming webhook URL
-- **EmailNotifier** — Sends HTML email via SMTP (TLS, optional auth)
-- **NotificationService** — Facade that fans out to both channels
-- Fires on: draft generated, draft approved, draft rejected
-- Both channels are optional — silently skipped when env vars are empty
+### Response Drafter (`src/agent/drafter.py`)
+Template-based generation with optional LLM refinement. Includes hallucination detection to flag low-confidence substitutions.
 
-### 8. SQLite Draft Store (`src/storage/sqlite_store.py`)
-- Persistent draft storage replacing in-memory dict
-- CRUD: `save`, `get`, `list_all`, `count`, `update_status`, `mark_posted`, `delete`
-- Indexed on `issue_key`, `status`, `created_at`
-- WAL journal mode for concurrent reads
-- Full Draft JSON stored alongside indexed columns
+### Integrations
 
-### 9. RAG Engine (`src/rag/engine.py`)
-- ChromaDB-backed vector store for semantic document retrieval
-- Sentence-transformer embeddings (default: `all-MiniLM-L6-v2`)
-- `add_chunks` — upsert document chunks into the collection
-- `query` — semantic search with optional source_type filter, returns ranked `RAGResult`
-- `delete_by_source` / `delete_by_id` — remove indexed documents
-- `stats` — collection size, source distribution, config info
-- Cosine similarity scoring (distance → relevance conversion)
+| Module | Purpose |
+|---|---|
+| `jira.py` | Jira Cloud REST — read issue, comments, attachments; write comments |
+| `testrail.py` | TestRail API v2 — runs, tests, results (API key or session cookie auth) |
+| `git.py` | GitHub / GitLab / Bitbucket — PR metadata |
+| `confluence.py` | Confluence Cloud — page fetch + CQL search for RAG ingestion |
+| `log_lookup.py` | Jenkins console logs + local log file scanning |
+| `notifications.py` | Teams AdaptiveCard + Email (SMTP) |
+| `s3_connector.py` | S3 / MinIO artifact fetch by build ID |
 
-### 10. Document Ingester (`src/rag/ingest.py`)
-- Sliding-window text chunking with configurable size and overlap
-- Prefers paragraph and sentence boundary breaks when splitting
-- `ingest_pdf` — parses PDF via pypdf, chunks, and indexes
-- `ingest_text` — chunks raw text and indexes with metadata
-- `ingest_confluence_page` — fetches Confluence page content, chunks, and indexes
+### Storage (`src/storage/sqlite_store.py`)
+SQLite with WAL mode. Stores full draft JSON + indexed columns for fast filtering.
 
-### 11. Confluence Client (`src/integrations/confluence.py`)
-- Wraps `atlassian-python-api` Confluence client
-- `get_page` — fetch page by ID with storage body
-- `get_page_content_as_text` — strip HTML to plain text for chunking
-- `search_pages` — CQL search by space and/or label
-- HTML-to-text conversion with entity decoding, script removal, whitespace normalisation
+### RAG Pipeline (`src/rag/`)
+ChromaDB vector store with sentence-transformer embeddings. Ingests PDF, plain text, and Confluence pages. Returns ranked snippets for context enrichment.
+
+### Queue & Rate Limiting
+- `src/queue/broker.py` — RabbitMQ for async webhook processing (optional, set `QUEUE_ENABLED=true`)
+- Rate limiter in `src/api/app.py` — token bucket, Redis-backed in HA deployments
 
 ## Data Models (`src/models/`)
 
 | Model | Purpose |
 |---|---|
-| `JiraWebhookEvent` | Incoming webhook payload with derived helpers |
+| `JiraWebhookEvent` | Incoming webhook payload |
 | `Comment` | Normalised Jira comment |
-| `CommentClassification` | Classification result with confidence (8 buckets) |
+| `CommentClassification` | Classification result (8 buckets + confidence) |
 | `IssueContext` | Full issue context snapshot |
-| `ContextCollectionResult` | Context + Jenkins links + RAG snippets + log entries + timing |
-| `Draft` | Generated response with citations, evidence tracking, and approval state |
-| `RAGSnippet` | Single retrieval result from RAG index |
-| `RAGResult` | Aggregated RAG retrieval result |
-| `LogEntry` | Log entry from Jenkins / ELK / file lookup |
-| `DocumentChunk` | Document chunk stored in vector index |
+| `ContextCollectionResult` | Context + all integration results + timing |
+| `Draft` | Generated reply with citations, evidence, approval state |
 
 ## Configuration (`src/config.py`)
 
-| Config Class | Purpose |
+All settings read from environment variables (`.env` file). See `.env.example` for the full reference.
+
+| Config Class | Key Variables |
 |---|---|
-| `JiraConfig` | Jira Cloud credentials |
-| `CopilotConfig` | Copilot SDK / OpenAI API settings |
-| `LLMConfig` | Local LLM (llama.cpp / GGUF) settings |
-| `RAGConfig` | ChromaDB, embedding model, chunking settings |
-| `ConfluenceConfig` | Confluence API credentials for RAG ingestion |
-| `TestRailConfig` | TestRail API credentials |
-| `LogLookupConfig` | Jenkins / log directory settings |
-| `NotificationConfig` | Teams + Email / SMTP settings |
-| `AppConfig` | Host, port, log level, DB path |
+| `JiraConfig` | `JIRA_BASE_URL`, `JIRA_USERNAME`, `JIRA_API_TOKEN` |
+| `LLMConfig` | `LLM_BACKEND`, `LLM_MODEL_PATH` |
+| `TestRailConfig` | `TESTRAIL_BASE_URL`, `TESTRAIL_SESSION_COOKIE` |
+| `GitConfig` | `GIT_TOKEN`, `GIT_OWNER`, `GIT_REPO` |
+| `RAGConfig` | `CHROMA_PERSIST_DIR`, `RAG_EMBEDDING_MODEL` |
+| `NotificationConfig` | `TEAMS_WEBHOOK_URL`, `SMTP_HOST`, `EMAIL_TO` |
+| `WebhookConfig` | `JIRA_WEBHOOK_SECRET`, `VALIDATE_WEBHOOK_SIGNATURE` |
+| `RateLimitConfig` | `RATE_LIMIT_ENABLED`, `RATE_LIMIT_RPM` |
+| `S3Config` | `S3_BUCKET`, `S3_REGION`, `AWS_ACCESS_KEY_ID` |
