@@ -6,7 +6,8 @@ Git PR metadata, and ELK log entries gathered by the ContextCollector.
 """
 
 from datetime import datetime
-from typing import Optional, Any
+from typing import Any, Optional
+
 from pydantic import BaseModel
 
 from src.models.rag import RAGSnippet, LogEntry

@@ -20,13 +20,16 @@ from fastapi.responses import JSONResponse
 from pydantic import ValidationError
 import logging
 import os
+from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from typing import Optional
 
-from src.models.webhook import JiraWebhookEvent
-from src.models.comment import Comment
-from src.models.draft import DraftStatus
-from src.api.event_filter import EventFilter
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.responses import JSONResponse
+from pydantic import ValidationError
+
+import src.config  # noqa: F401 — triggers dotenv loading
+
 from src.agent.classifier import CommentClassifier
 from src.agent.drafter import ResponseDrafter
 from src.integrations.notifications import (
@@ -116,6 +119,7 @@ def _get_rag_ingester():
     return _rag_ingester
 
 
+# App lifecycle
 @asynccontextmanager
 async def lifespan(app_instance: FastAPI):
     """Application lifespan — startup / shutdown."""
@@ -139,9 +143,10 @@ app = FastAPI(
 )
 
 
+# Health check
 @app.get("/health")
 async def health_check():
-    """Health check endpoint."""
+    """Return service status and version."""
     return {
         "status": "healthy",
         "timestamp": datetime.now(timezone.utc).isoformat(),
@@ -169,12 +174,14 @@ async def jira_webhook(request: Request):
     2. EventFilter — gates on issue type, status, trigger keywords, idempotency.
     3. Hand off to the Orchestrator.
     """
+    body = await request.body()
+    _verify_webhook_signature(request, body)
+
     try:
         payload = await request.json()
     except Exception:
         raise HTTPException(status_code=400, detail="Invalid JSON payload")
 
-    # Parse
     try:
         event = JiraWebhookEvent(**payload)
     except ValidationError as exc:
@@ -191,7 +198,6 @@ async def jira_webhook(request: Request):
         event.comment.id if event.comment else None,
     )
 
-    # Filter
     result = event_filter.evaluate(event)
     if not result.accepted:
         logger.info("Event filtered out: %s", result.reason)
@@ -216,26 +222,21 @@ async def _orchestrate(event: JiraWebhookEvent):
     assert event.comment is not None
     assert event.issue is not None
 
-    # 1. Build Comment model from webhook event
-    comment = Comment(
-        comment_id=event.comment.id,
-        issue_key=event.issue.key,
-        author=(
-            event.comment.author.displayName
-            or event.comment.author.emailAddress
-            or "unknown"
-        ),
-        created=datetime.fromisoformat(
-            event.comment.created.replace("+0000", "+00:00")
-        ) if event.comment.created else datetime.now(timezone.utc),
-        updated=datetime.fromisoformat(
-            event.comment.updated.replace("+0000", "+00:00")
-        ) if event.comment.updated else datetime.now(timezone.utc),
-        body=event.comment.body,
+    # 1. Build Comment model
+    comment = _build_comment(event)
+
+    # 2. Retrieve: Jira issue + attachments + last comments + Jenkins console logs
+    loop = asyncio.get_running_loop()
+    context = await loop.run_in_executor(None, _collect_context_safe, comment.issue_key)
+    logger.info(
+        "Collected context for %s (jenkins_links=%d, attachments=%d)",
+        comment.issue_key,
+        len(context.jenkins_links or []),
+        len((context.issue_context.attached_files or []) if context.issue_context else []),
     )
 
-    # 2. Classify
-    classification = classifier.classify(comment)
+    # 3. Classify (with full context for richer evidence-based classification)
+    classification = await classifier.classify(comment, context=context)
     logger.info(
         "Classified %s comment %s → %s (%.2f)",
         comment.issue_key,
@@ -244,11 +245,8 @@ async def _orchestrate(event: JiraWebhookEvent):
         classification.confidence,
     )
 
-    # 3. Context collection (deferred if Jira creds not configured)
-    context = _collect_context_safe(comment.issue_key)
-
-    # 4. Draft response
-    draft = drafter.draft(comment, classification, context)
+    # 4. Draft response + evidence list
+    draft = await drafter.draft(comment, classification, context)
     logger.info("Generated draft %s for %s", draft.draft_id, comment.issue_key)
 
     # 5. Store (persistent SQLite)
@@ -395,13 +393,24 @@ async def approve_draft(request: Request):
         raise HTTPException(status_code=500, detail="Failed to approve draft")
 
 
+@app.post("/reject/{draft_id}")
+async def reject_draft_short(draft_id: str, request: Request):
+    """Reject a draft by path — POST /reject/draft_abc123."""
+    return await _do_reject(draft_id, request)
+
+
 @app.post("/reject")
 async def reject_draft(request: Request):
-    """Reject a draft response with optional feedback."""
+    """Reject a draft (JSON body with draft_id)."""
+    payload = await request.json()
+    draft_id = payload.get("draft_id")
+    return await _do_reject(draft_id, request, feedback=payload.get("feedback", ""))
+
+
+async def _do_reject(draft_id: str, request: Request, feedback: str = ""):
+    """Shared reject logic."""
     try:
-        payload = await request.json()
-        draft_id = payload.get("draft_id")
-        feedback = payload.get("feedback", "")
+        _verify_approval_auth(request)
 
         draft_data = draft_store.get(draft_id)
         if draft_data is None:
@@ -423,6 +432,7 @@ async def reject_draft(request: Request):
         )
 
         return {"status": "rejected", "draft_id": draft_id}
+
     except HTTPException:
         raise
     except Exception as e:
