@@ -8,9 +8,7 @@ from src.models.draft import Draft, DraftStatus
 from datetime import datetime, timezone
 
 
-# ---------------------------------------------------------------------------
 # Helpers
-# ---------------------------------------------------------------------------
 
 def _make_draft(
     draft_id: str = "draft_test001",
@@ -51,9 +49,7 @@ def _clean_store():
 client = TestClient(app, follow_redirects=False)
 
 
-# ---------------------------------------------------------------------------
 # GET /ui — draft list page
-# ---------------------------------------------------------------------------
 
 class TestUiList:
     def test_empty_list_returns_200(self):
@@ -94,9 +90,7 @@ class TestUiList:
         assert "text/html" in resp.headers["content-type"]
 
 
-# ---------------------------------------------------------------------------
 # GET /ui/drafts/{id} — review page
-# ---------------------------------------------------------------------------
 
 class TestUiReview:
     def test_review_page_200_with_valid_draft(self):
@@ -153,9 +147,7 @@ class TestUiReview:
         assert "85%" in resp.text
 
 
-# ---------------------------------------------------------------------------
 # POST /ui/drafts/{id}/approve — form submission
-# ---------------------------------------------------------------------------
 
 class TestUiApprove:
     def test_approve_redirects_303(self):
@@ -203,9 +195,7 @@ class TestUiApprove:
         assert stored["body"] == "Keep this body."
 
 
-# ---------------------------------------------------------------------------
 # POST /ui/drafts/{id}/reject — form submission
-# ---------------------------------------------------------------------------
 
 class TestUiReject:
     def test_reject_redirects_303(self):
@@ -250,9 +240,7 @@ class TestUiReject:
         assert resp.status_code == 404
 
 
-# ---------------------------------------------------------------------------
 # SQLiteDraftStore.update_body
-# ---------------------------------------------------------------------------
 
 class TestUpdateBody:
     def test_update_body_changes_body_in_store(self):
