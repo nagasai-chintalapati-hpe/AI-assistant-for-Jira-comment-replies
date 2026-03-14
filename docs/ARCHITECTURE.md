@@ -1,106 +1,149 @@
 # Architecture Overview
 
-## High-Level Flow
+## Deployment Topology
 
 ```
-1. Jira Webhook Event (comment_created / comment_updated)
-   └─▶ FastAPI Webhook Receiver  (POST /webhook/jira)
+┌─────────────────────────────────────────────────────────────────┐
+│  Internet / SaaS                                                │
+│  ┌─────────────┐                                                │
+│  │  Jira Cloud │  ◀── Outbound HTTPS / Jira REST API (read)    │
+│  └──────┬──────┘                                                │
+│         │  Webhook: comment_created                             │
+└─────────┼───────────────────────────────────────────────────────┘
+          │
+┌─────────▼───────────────────────────────────────────────────────┐
+│  DMZ / Perimeter Zone                                           │
+│  ┌─────────────────────────────────┐                            │
+│  │  Webhook Relay                  │                            │
+│  │  Validates signature            │                            │
+│  │  Enqueues event                 │                            │
+│  └──────────────┬──────────────────┘                            │
+│                 │                                               │
+│  ┌──────────────▼──────────────────┐                            │
+│  │  Queue (RabbitMQ / Kafka)        │                            │
+│  └──────────────┬──────────────────┘                            │
+└─────────────────┼───────────────────────────────────────────────┘
+                  │  Consume events
+┌─────────────────▼───────────────────────────────────────────────┐
+│  On-Prem Network                                                │
+│                                                                 │
+│  ┌──────────────────────────────────────────────────────────┐   │
+│  │  Agent Service                                           │   │
+│  │                                                          │   │
+│  │  ┌─────────────┐   ┌──────────────┐                     │   │
+│  │  │     LLM     │   │ RAG Retriever│──▶ RAG Pipeline     │   │
+│  │  │(llama.cpp / │   │  (ChromaDB)  │                     │   │
+│  │  │ Copilot SDK)│   └──────────────┘                     │   │
+│  │  └─────────────┘                                         │   │
+│  │  ┌─────────────┐   ┌──────────────┐                     │   │
+│  │  │ Classifier  │   │   Drafter    │──▶ Review UI        │   │
+│  │  └─────────────┘   └──────────────┘                     │   │
+│  └──────────────────────────────────────────────────────────┘   │
+│                                                                 │
+│  ┌──────────────┐  ┌─────────────┐  ┌─────────────────────┐   │
+│  │ Local LLM    │  │ Vector Store│  │ Confluence/PDF       │   │
+│  │ Server       │  │ (ChromaDB)  │  │ Indexer + Store      │   │
+│  └──────────────┘  └─────────────┘  └─────────────────────┘   │
+│                                                                 │
+│  ┌──────────────┐  ┌─────────────┐  ┌─────────────────────┐   │
+│  │  TestRail    │  │    Logs     │  │  S3 / Build Artifact │   │
+│  │  Connector   │  │  Connector  │  │  Store               │   │
+│  └──────────────┘  └─────────────┘  └─────────────────────┘   │
+└─────────────────────────────────────────────────────────────────┘
+```
 
-2. Event Filtering  (src/api/event_filter.py)
-   ├─▶ Event type gate        — comment_created, comment_updated only
-   ├─▶ Idempotency check      — dedup by deterministic event ID
-   ├─▶ Issue type gate        — Bug / Defect only
-   └─▶ Status gate            — Open, In Progress, Ready for QA, Reopened,
-                                To Do, In Review, Cannot Reproduce,
-                                Closed, Resolved, Done, …
+## End-to-End Pipeline
+
+```
+1. Jira Webhook Event (comment_created)
+   └─▶ Webhook Relay validates HMAC signature → enqueues to RabbitMQ/Kafka
+
+2. Agent Service consumes event
+   └─▶ Event Filter (src/api/event_filter.py)
+       ├─▶ Event type    — comment_created / comment_updated only
+       ├─▶ Idempotency   — dedup by deterministic event ID
+       ├─▶ Issue type    — Bug / Defect only
+       └─▶ Status gate   — Open, In Progress, Ready for QA, Reopened, …
 
 3. Classification  (src/agent/classifier.py)
-   ├─▶ Local LLM / Copilot SDK  (if configured)
-   └─▶ Keyword fallback         (always available)
+   ├─▶ LLM / Copilot SDK  (if configured)
+   └─▶ Keyword fallback   (always available)
    Buckets: cannot_reproduce | need_more_info | fixed_validate | by_design
             | duplicate_fixed | blocked_waiting | config_issue | other
 
 4. Context Collection  (src/agent/context_collector.py)
-   ├─▶ Jira API        — issue fields, comments, attachments, links, changelog
-   ├─▶ TestRail        — run summaries detected from R<id> references in issue text
-   ├─▶ Git             — PR metadata detected from PR URLs in issue text
-   ├─▶ RAG engine      — semantic search over indexed Confluence / PDFs
-   ├─▶ Log lookup      — Jenkins console logs / local log files
-   ├─▶ ELK             — OpenSearch / Elasticsearch log queries
-   └─▶ S3              — build artifact fetch by detected build ID
+   ├─▶ Jira         — issue fields, comments, attachments, links, changelog
+   ├─▶ TestRail     — run summaries from R<id> markers in issue text
+   ├─▶ Git          — PR metadata from PR URLs / branch names
+   ├─▶ RAG          — semantic search over Confluence + PDFs (top 5 snippets)
+   ├─▶ Log lookup   — Jenkins console logs / local log files
+   ├─▶ ELK          — OpenSearch log queries by build/run ID + time window
+   └─▶ S3           — build artifact fetch by detected build ID
 
 5. Draft Generation  (src/agent/drafter.py)
-   ├─▶ Template selection  (one per bucket, 8 total)
-   ├─▶ Variable substitution from collected context
-   ├─▶ Optional LLM refinement
-   ├─▶ Hallucination detection
-   └─▶ Citation + evidence tracking, suggested labels + actions
+   ├─▶ Template per bucket (8 total)
+   │   Structure: ✅ Acknowledge · 🔎 Evidence · 🧪 Repro steps
+   │              ❓ Missing info · ▶️ Next action
+   ├─▶ Evidence citations (TestRail / PR / Confluence / log excerpts)
+   ├─▶ Optional LLM refinement + hallucination detection
+   └─▶ Suggested labels + transitions
 
-6. Storage & Human-in-the-Loop Approval
-   ├─▶ SQLite draft store (persistent)
-   ├─▶ Review UI  GET /ui  — list, filter, view drafts
-   ├─▶ POST /approve  → posts approved comment back to Jira
-   └─▶ POST /reject   → stores feedback
+6. Human-in-the-Loop Approval  (no auto-post policy)
+   ├─▶ SQLite draft store — full audit trail
+   ├─▶ Review UI  GET /ui — list · filter · view · edit drafts
+   ├─▶ Teams AdaptiveCard — draft text + evidence + approve/reject actions
+   ├─▶ POST /approve → posts approved comment back to Jira
+   └─▶ POST /reject  → stores feedback
 
-7. Notifications 
-   ├─▶ Teams  — AdaptiveCard via incoming webhook
-   └─▶ Email  — HTML summary via SMTP
+7. Audit & Observability
+   ├─▶ Every draft stores: event ID, issue key, comment ID, inputs used,
+   │   evidence links, draft text, classification, confidence, who approved
+   └─▶ Redaction stats, hallucination flags, time-saved metrics
 ```
 
 ## Components
 
-### Webhook Receiver (`src/api/app.py`)
-FastAPI server. Parses Jira payloads, runs the full pipeline, serves the Review UI.
+### Agent Service (`src/api/app.py`, `src/agent/`)
+Hosted on-prem. Receives events from the queue, orchestrates the full pipeline, enforces policies (redaction, grounding, audit), and serves the Review UI.
 
 Key endpoints:
 
 | Method | Path | Purpose |
 |---|---|---|
-| `POST` | `/webhook/jira` | Receive Jira comment events |
+| `POST` | `/webhook/jira` | Direct webhook receive (dev / single-node) |
 | `GET` | `/health` | Health + integration status |
-| `GET` | `/ui` | Draft Review UI (list) |
-| `GET` | `/ui/drafts/{id}` | Draft detail + approve/reject |
-| `GET/POST` | `/drafts`, `/drafts/{id}` | JSON API for drafts |
-| `POST` | `/approve`, `/reject` | Programmatic approve/reject |
+| `GET` | `/ui` | Draft Review UI |
+| `GET/POST` | `/drafts`, `/drafts/{id}` | JSON draft API |
+| `POST` | `/approve`, `/reject` | Approve / reject with feedback |
 | `POST` | `/rag/ingest/*` | Ingest PDF / text / Confluence |
-| `GET` | `/rag/search`, `/rag/stats` | RAG query + stats |
+| `GET` | `/rag/search` | RAG semantic query |
 
-### Event Filter (`src/api/event_filter.py`)
-Five gates: event type → idempotency → issue type → status → issue/comment presence.
-Keyword matching is informational only — used by the classifier, not as a gate.
+### Connectors / Tools
 
-### Comment Classifier (`src/agent/classifier.py`)
-Two-tier: LLM → keyword fallback. Returns `CommentClassification` with confidence, reasoning, missing context, and suggested questions.
+| Module | Spec Name | Purpose |
+|---|---|---|
+| `jira.py` | JiraConnector | Issue fields, comments, attachments, write comments |
+| `testrail.py` | TestRailConnector | Run/case results by R\<id\> marker (API key or session cookie) |
+| `git.py` | — | GitHub / GitLab / Bitbucket PR metadata |
+| `confluence.py` | Confluence/PDFConnector | Page fetch + CQL search for RAG ingestion |
+| `log_lookup.py` | LogStoreConnector | Jenkins console logs + ELK queries by build/time window |
+| `s3_connector.py` | S3ArtifactFetcher | Pre-signed URL artifact fetch by build ID |
+| `notifications.py` | — | Teams AdaptiveCard + Email (SMTP) |
 
-### Context Collector (`src/agent/context_collector.py`)
-Orchestrates all external API calls. Returns `ContextCollectionResult` with issue context, TestRail results, Git PRs, RAG snippets, log entries, and collection timing.
-- TestRail: detects `R<id>` / `run/<id>` patterns in issue text/comments
-- Git PRs: detects PR URLs and branch names containing the issue key
-
-### Response Drafter (`src/agent/drafter.py`)
-Template-based generation with optional LLM refinement. Includes hallucination detection to flag low-confidence substitutions.
-
-### Integrations
-
-| Module | Purpose |
-|---|---|
-| `jira.py` | Jira Cloud REST — read issue, comments, attachments; write comments |
-| `testrail.py` | TestRail API v2 — runs, tests, results (API key or session cookie auth) |
-| `git.py` | GitHub / GitLab / Bitbucket — PR metadata |
-| `confluence.py` | Confluence Cloud — page fetch + CQL search for RAG ingestion |
-| `log_lookup.py` | Jenkins console logs + local log file scanning |
-| `notifications.py` | Teams AdaptiveCard + Email (SMTP) |
-| `s3_connector.py` | S3 / MinIO artifact fetch by build ID |
+### RAG Index (`src/rag/`)
+ChromaDB vector store with sentence-transformer embeddings. Ingests Confluence pages, PDFs, runbooks, and known-issues docs. Stores chunk metadata (component/version/env) and returns citations per snippet.
 
 ### Storage (`src/storage/sqlite_store.py`)
-SQLite with WAL mode. Stores full draft JSON + indexed columns for fast filtering.
-
-### RAG Pipeline (`src/rag/`)
-ChromaDB vector store with sentence-transformer embeddings. Ingests PDF, plain text, and Confluence pages. Returns ranked snippets for context enrichment.
+SQLite with WAL mode. Stores full draft JSON, inputs used, evidence links, approval state, and redaction stats for every event.
 
 ### Queue & Rate Limiting
-- `src/queue/broker.py` — RabbitMQ for async webhook processing (optional, set `QUEUE_ENABLED=true`)
-- Rate limiter in `src/api/app.py` — token bucket, Redis-backed in HA deployments
+- `src/queue/broker.py` — RabbitMQ/Kafka async event processing (`QUEUE_ENABLED=true`)
+- Rate limiter in `src/api/app.py` — token bucket, Redis-backed for HA deployments
+
+### Security & Redaction
+- `src/utils/redactor.py` — strips secrets, PII, and internal tokens before LLM calls
+- Webhook HMAC signature validation (`VALIDATE_WEBHOOK_SIGNATURE=true`)
+- Least-privilege Jira scopes: read issues + post comments only
 
 ## Data Models (`src/models/`)
 
@@ -115,7 +158,7 @@ ChromaDB vector store with sentence-transformer embeddings. Ingests PDF, plain t
 
 ## Configuration (`src/config.py`)
 
-All settings read from environment variables (`.env` file). See `.env.example` for the full reference.
+All settings from environment variables. See `.env.example` for the full reference.
 
 | Config Class | Key Variables |
 |---|---|
@@ -128,3 +171,14 @@ All settings read from environment variables (`.env` file). See `.env.example` f
 | `WebhookConfig` | `JIRA_WEBHOOK_SECRET`, `VALIDATE_WEBHOOK_SIGNATURE` |
 | `RateLimitConfig` | `RATE_LIMIT_ENABLED`, `RATE_LIMIT_RPM` |
 | `S3Config` | `S3_BUCKET`, `S3_REGION`, `AWS_ACCESS_KEY_ID` |
+| `QueueConfig` | `QUEUE_ENABLED`, `QUEUE_URL`, `QUEUE_NAME` |
+
+## Objective
+
+Build an on-prem agentic AI assistant that helps QA teams respond to developer comments on Jira defects by generating context-aware, evidence-grounded draft replies — with human approval before any comment is posted back to Jira.
+
+**Key principles:**
+- **Human-in-the-loop** — no auto-post, ever. Drafts route for approval first.
+- **Grounded in evidence** — every claim backed by a citation (TestRail / Confluence / log / PR).
+- **On-prem by default** — LLM, RAG, and secrets never leave the HPE network.
+- **Measurable** — track draft acceptance rate, edits made, time saved, hallucination rate.
