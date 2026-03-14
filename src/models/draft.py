@@ -44,6 +44,10 @@ class Draft(BaseModel):
     approved_at: Optional[datetime] = None
     posted_at: Optional[datetime] = None
 
+    # Quality tracking
+    rating: Optional[int] = None        # 1–5 stars; set by human reviewer
+    hallucination_flag: bool = False     # True if draft has specific claims but no evidence
+
     model_config = ConfigDict(
         json_schema_extra={
             "example": {

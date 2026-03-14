@@ -32,6 +32,7 @@ CREATE TABLE IF NOT EXISTS drafts (
     approved_at     TEXT,
     posted_at       TEXT,
     feedback        TEXT,
+    rating          INTEGER,
     data_json       TEXT NOT NULL   -- full Draft model as JSON
 );
 
@@ -68,6 +69,19 @@ class SQLiteDraftStore:
         """Create tables and indexes if they don't exist."""
         self._conn.executescript(_SCHEMA)
         self._conn.commit()
+        self._migrate_columns()
+
+    def _migrate_columns(self) -> None:
+        """Add new columns to existing databases (idempotent migrations)."""
+        migrations = [
+            "ALTER TABLE drafts ADD COLUMN rating INTEGER",
+        ]
+        for sql in migrations:
+            try:
+                self._conn.execute(sql)
+                self._conn.commit()
+            except sqlite3.OperationalError:
+                pass  # column already exists — safe to ignore
 
     # CRUD operations
 
@@ -77,8 +91,8 @@ class SQLiteDraftStore:
             """INSERT OR REPLACE INTO drafts
                (draft_id, issue_key, comment_id, created_at, created_by,
                 body, classification, confidence, status,
-                approved_by, approved_at, posted_at, feedback, data_json)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                approved_by, approved_at, posted_at, feedback, rating, data_json)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 draft.draft_id,
                 draft.issue_key,
@@ -93,6 +107,7 @@ class SQLiteDraftStore:
                 draft.approved_at.isoformat() if draft.approved_at else None,
                 draft.posted_at.isoformat() if draft.posted_at else None,
                 None,  # feedback
+                draft.rating,
                 draft.model_dump_json(),
             ),
         )
@@ -262,3 +277,160 @@ class SQLiteDraftStore:
     @property
     def db_path(self) -> str:
         return self._db_path
+
+    def save_rating(self, draft_id: str, rating: int) -> bool:
+        """Persist a human quality rating (1–5 stars) for a draft.
+
+        Parameters
+        ----------
+        draft_id : str
+        rating : int
+            Integer 1–5 (1 = very poor, 5 = excellent).
+
+        Returns
+        -------
+        bool
+            ``True`` if the draft was found and updated; ``False`` otherwise.
+
+        Raises
+        ------
+        ValueError
+            If *rating* is outside the 1–5 range.
+        """
+        if not (1 <= rating <= 5):
+            raise ValueError(f"Rating must be 1–5, got {rating}")
+
+        row = self._conn.execute(
+            "SELECT data_json FROM drafts WHERE draft_id = ?", (draft_id,)
+        ).fetchone()
+        if not row:
+            return False
+
+        data = json.loads(row["data_json"])
+        data["rating"] = rating
+        self._conn.execute(
+            "UPDATE drafts SET rating = ?, data_json = ? WHERE draft_id = ?",
+            (rating, json.dumps(data), draft_id),
+        )
+        self._conn.commit()
+        logger.info("Saved rating %d for draft %s", rating, draft_id)
+        return True
+
+    def get_metrics(self) -> dict:
+        """Return aggregated draft quality and processing metrics.
+
+        Returns
+        -------
+        dict
+            Keys: ``total_drafts``, ``approved``, ``rejected``, ``pending``,
+            ``acceptance_rate_pct``, ``avg_confidence``, ``avg_rating``,
+            ``hallucination_flagged``, ``by_classification``.
+        """
+        total = self.count()
+        approved = self.count(status="approved")
+        rejected = self.count(status="rejected")
+        pending = self.count(status="generated")
+
+        conf_row = self._conn.execute(
+            "SELECT AVG(confidence) as avg_conf FROM drafts"
+        ).fetchone()
+        avg_confidence = round(conf_row["avg_conf"] or 0.0, 3)
+
+        rating_row = self._conn.execute(
+            "SELECT AVG(rating) as avg_rating FROM drafts WHERE rating IS NOT NULL"
+        ).fetchone()
+        avg_rating = (
+            round(rating_row["avg_rating"], 2)
+            if rating_row and rating_row["avg_rating"] is not None
+            else None
+        )
+
+        acceptance_rate = round(approved / total * 100, 1) if total > 0 else 0.0
+
+        type_rows = self._conn.execute(
+            "SELECT classification, COUNT(*) as cnt FROM drafts "
+            "GROUP BY classification ORDER BY cnt DESC"
+        ).fetchall()
+        by_classification = {
+            (r["classification"] or "unknown"): r["cnt"] for r in type_rows
+        }
+
+        hall_row = self._conn.execute(
+            "SELECT COUNT(*) as cnt FROM drafts "
+            "WHERE json_extract(data_json, '$.hallucination_flag') = 1"
+        ).fetchone()
+        hallucination_flagged = hall_row["cnt"] if hall_row else 0
+
+        return {
+            "total_drafts": total,
+            "approved": approved,
+            "rejected": rejected,
+            "pending": pending,
+            "acceptance_rate_pct": acceptance_rate,
+            "avg_confidence": avg_confidence,
+            "avg_rating": avg_rating,
+            "hallucination_flagged": hallucination_flagged,
+            "by_classification": by_classification,
+        }
+
+
+# --------------------------------------------------------------------------- #
+# Idempotency store                                                             #
+# --------------------------------------------------------------------------- #
+
+_IDEMPOTENCY_SCHEMA = """\
+CREATE TABLE IF NOT EXISTS seen_events (
+    event_id  TEXT PRIMARY KEY,
+    seen_at   TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_seen_events_seen_at ON seen_events(seen_at);
+"""
+
+
+class SQLiteIdempotencyStore:
+    """Persistent event-ID deduplication store backed by SQLite.
+
+    Shared database with :class:`SQLiteDraftStore` when the same
+    ``db_path`` is supplied — no extra file needed.
+
+    Parameters
+    ----------
+    db_path : str
+        Path to the SQLite database file.  Use ``":memory:"`` for tests.
+    """
+
+    def __init__(self, db_path: str = ".data/assistant.db") -> None:
+        self._db_path = db_path
+        if db_path != ":memory:":
+            Path(db_path).parent.mkdir(parents=True, exist_ok=True)
+        self._conn = sqlite3.connect(db_path, check_same_thread=False)
+        self._conn.row_factory = sqlite3.Row
+        self._conn.execute("PRAGMA journal_mode=WAL")
+        self._conn.executescript(_IDEMPOTENCY_SCHEMA)
+        self._conn.commit()
+        logger.info("Idempotency store ready (%s)", db_path)
+
+    def is_seen(self, event_id: str) -> bool:
+        """Return True if *event_id* has already been recorded."""
+        row = self._conn.execute(
+            "SELECT 1 FROM seen_events WHERE event_id = ?", (event_id,)
+        ).fetchone()
+        return row is not None
+
+    def mark_seen(self, event_id: str) -> None:
+        """Record *event_id* as processed.  Silently ignores duplicates."""
+        self._conn.execute(
+            "INSERT OR IGNORE INTO seen_events (event_id, seen_at) VALUES (?, ?)",
+            (event_id, datetime.now(timezone.utc).isoformat()),
+        )
+        self._conn.commit()
+
+    def clear(self) -> int:
+        """Remove all records.  Returns count deleted (useful in tests)."""
+        result = self._conn.execute("DELETE FROM seen_events")
+        self._conn.commit()
+        return result.rowcount
+
+    def close(self) -> None:
+        """Close the database connection."""
+        self._conn.close()

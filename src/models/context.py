@@ -80,6 +80,7 @@ class ContextCollectionResult(BaseModel):
 
     git_prs: Optional[list[GitPRMetadata]] = None          
     elk_log_entries: Optional[list[LogEntry]] = None  
+    s3_artifacts: Optional[list[dict[str, Any]]] = None  # S3 artifact metadata
 
     collection_timestamp: datetime
     collection_duration_ms: float

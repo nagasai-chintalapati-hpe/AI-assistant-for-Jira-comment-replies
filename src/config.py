@@ -27,7 +27,8 @@ class JiraConfig:
 @dataclass(frozen=True)
 class CopilotConfig:
     api_key: str = os.getenv("COPILOT_API_KEY", "")
-    model: str = os.getenv("COPILOT_MODEL", "gpt-4")
+    base_url: str = os.getenv("COPILOT_BASE_URL", "https://api.githubcopilot.com")
+    model: str = os.getenv("COPILOT_MODEL", "gpt-4o")
     temperature: float = float(os.getenv("COPILOT_TEMPERATURE", "0.1"))
     max_tokens: int = int(os.getenv("COPILOT_MAX_TOKENS", "1024"))
 
@@ -134,12 +135,69 @@ class NotificationConfig:
 
 
 @dataclass(frozen=True)
+class WebhookConfig:
+    """Jira webhook HMAC-SHA256 signature validation."""
+
+    secret: str = os.getenv("JIRA_WEBHOOK_SECRET", "")
+    # Set VALIDATE_WEBHOOK_SIGNATURE=true in production once the Jira webhook
+    # secret is configured.  Disabled by default for easier local dev.
+    validate_signature: bool = (
+        os.getenv("VALIDATE_WEBHOOK_SIGNATURE", "false").lower() == "true"
+    )
+
+
+@dataclass(frozen=True)
+class RateLimitConfig:
+    """Per-IP rate limiting on the webhook endpoint."""
+
+    enabled: bool = os.getenv("RATE_LIMIT_ENABLED", "true").lower() == "true"
+    max_requests_per_minute: int = int(os.getenv("RATE_LIMIT_RPM", "60"))
+
+
+@dataclass(frozen=True)
+class S3Config:
+    """S3 / MinIO artifact storage configuration."""
+
+    bucket: str = os.getenv("S3_BUCKET", "")
+    endpoint_url: str = os.getenv("S3_ENDPOINT_URL", "")  # empty = AWS default
+    access_key: str = os.getenv("S3_ACCESS_KEY", "")
+    secret_key: str = os.getenv("S3_SECRET_KEY", "")
+    region: str = os.getenv("S3_REGION", "us-east-1")
+    artifacts_prefix: str = os.getenv("S3_ARTIFACTS_PREFIX", "artifacts/")
+
+
+@dataclass(frozen=True)
+class RedisConfig:
+    """Redis configuration for distributed rate limiting and caching."""
+
+    enabled: bool = os.getenv("REDIS_ENABLED", "false").lower() == "true"
+    host: str = os.getenv("REDIS_HOST", "localhost")
+    port: int = int(os.getenv("REDIS_PORT", "6379"))
+    password: str = os.getenv("REDIS_PASSWORD", "")
+    db: int = int(os.getenv("REDIS_DB", "0"))
+    # Full URL overrides host/port/password when set
+    url: str = os.getenv("REDIS_URL", "")
+
+
+@dataclass(frozen=True)
+class QueueConfig:
+    """RabbitMQ / AMQP message queue configuration."""
+
+    enabled: bool = os.getenv("QUEUE_ENABLED", "false").lower() == "true"
+    url: str = os.getenv("RABBITMQ_URL", "amqp://guest:guest@localhost/")
+    queue_name: str = os.getenv("QUEUE_NAME", "jira_webhook_events")
+    prefetch_count: int = int(os.getenv("QUEUE_PREFETCH_COUNT", "1"))
+
+
+@dataclass(frozen=True)
 class AppConfig:
     host: str = os.getenv("APP_HOST", "0.0.0.0")
     port: int = int(os.getenv("APP_PORT", "8000"))
     log_level: str = os.getenv("LOG_LEVEL", "INFO")
     max_comments: int = int(os.getenv("MAX_COMMENTS", "10"))
     db_path: str = os.getenv("ASSISTANT_DB_PATH", ".data/assistant.db")
+    # Public base URL of this service — used for Review UI links in Teams cards
+    base_url: str = os.getenv("APP_BASE_URL", "http://localhost:8000")
 
 
 @dataclass(frozen=True)
@@ -155,6 +213,11 @@ class Settings:
     elk: ELKConfig = field(default_factory=ELKConfig)
     notifications: NotificationConfig = field(default_factory=NotificationConfig)
     app: AppConfig = field(default_factory=AppConfig)
+    webhook: WebhookConfig = field(default_factory=WebhookConfig)
+    rate_limit: RateLimitConfig = field(default_factory=RateLimitConfig)
+    s3: S3Config = field(default_factory=S3Config)
+    redis: RedisConfig = field(default_factory=RedisConfig)
+    queue: QueueConfig = field(default_factory=QueueConfig)
 
 
 # Module-level singleton
