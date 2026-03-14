@@ -1,7 +1,17 @@
-"""FastAPI application – full pipeline + approval workflow.
+"""FastAPI application – Jira webhook listener + agent orchestration.
 
-Pipeline: Webhook → Filter → Classify → Context → Draft → Store
-Approval: Human reviews draft → Approve (posts to Jira) or Reject
+Architecture flow (matches high-level design):
+  Jira Cloud
+    → Webhook Listener   (POST /webhook/jira)
+    → Event Filter       (type, status, keyword, idempotency)
+    → Orchestrator       (_orchestrate)
+        ├─ Classifier     (CommentClassifier)
+        ├─ Context        (ContextCollector + Tooling Layer)
+        ├─ LLM / Drafter  (ResponseDrafter)
+        └─ Draft Store    (SQLiteDraftStore)
+    → Approval Service   (POST /approve, POST /reject)
+    → Action Executor    (post comment to Jira on approval)
+    → RAG Pipeline       (POST /rag/ingest/*, GET /rag/search)
 """
 
 from contextlib import asynccontextmanager
@@ -31,6 +41,7 @@ from src.storage.sqlite_store import SQLiteDraftStore
 from src.integrations.log_lookup import LogLookupService
 from src.integrations.testrail import TestRailClient
 from src.integrations.jira import JiraClient
+from src.integrations.git import GitClient
 from src.config import settings
 
 import shutil
@@ -38,31 +49,38 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
-# singletons 
+# Webhook listener — event gate
 event_filter = EventFilter()
 
-# Copilot SDK API key — optional; leave empty for keyword-only mode
+# LLM / Drafter — optional Copilot SDK polish
 _COPILOT_API_KEY: Optional[str] = os.getenv("COPILOT_API_KEY")
 _COPILOT_MODEL: str = os.getenv("COPILOT_MODEL", "gpt-4")
 
 classifier = CommentClassifier(api_key=_COPILOT_API_KEY, model=_COPILOT_MODEL)
 drafter = ResponseDrafter(api_key=_COPILOT_API_KEY, model=_COPILOT_MODEL)
 
-# Persistent SQLite draft store (replaces in-memory dict)
+# Draft store — persistent SQLite
 draft_store = SQLiteDraftStore(db_path=settings.app.db_path)
 
-# Log Lookup + TestRail (optional — gracefully disabled when unconfigured)
+# Tooling layer — connectors (each degrades gracefully when unconfigured)
 _log_lookup = LogLookupService()
 _testrail_client = TestRailClient()
 
-# Jira client for posting approved drafts
 _jira_client: Optional[JiraClient] = None
 try:
     _jira_client = JiraClient()
 except Exception:
     _jira_client = None
 
-# Notification service (optional — disabled when env vars are empty)
+_git_client: Optional[GitClient] = None
+try:
+    _git_client = GitClient()
+    if not _git_client.enabled:
+        _git_client = None
+except Exception:
+    _git_client = None
+
+# Approval service — notification channels (Teams + Email)
 _teams = TeamsNotifier(webhook_url=os.getenv("TEAMS_WEBHOOK_URL"))
 _email = EmailNotifier(
     smtp_host=os.getenv("SMTP_HOST"),
@@ -78,7 +96,7 @@ _email = EmailNotifier(
 )
 notifier = NotificationService(teams=_teams, email=_email)
 
-# RAG engine + ingester (lazy — initialised on first RAG endpoint call)
+# RAG pipeline — lazy-initialised on first call
 _rag_engine = None
 _rag_ingester = None
 
@@ -111,7 +129,7 @@ async def lifespan(app_instance: FastAPI):
     if _email.enabled:
         channels.append("Email")
     logger.info(
-        "Starting Jira Comment Assistant API (v0.5.0) — notifications: %s",
+        "Starting Jira Comment Assistant API (v0.6.0) — notifications: %s",
         ", ".join(channels) if channels else "none",
     )
     yield
@@ -120,7 +138,7 @@ async def lifespan(app_instance: FastAPI):
 app = FastAPI(
     title="Jira Comment Assistant",
     description="AI assistant for responding to Jira defect comments",
-    version="0.5.0",
+    version="0.6.0",
     lifespan=lifespan,
 )
 
@@ -132,25 +150,29 @@ async def health_check():
     return {
         "status": "healthy",
         "timestamp": datetime.now(timezone.utc).isoformat(),
-        "version": "0.5.0",
+        "version": "0.6.0",
         "drafts_in_store": draft_store.count(),
         "notifications": {
             "teams": _teams.enabled,
             "email": _email.enabled,
         },
+        "integrations": {
+            "git": _git_client is not None,
+            "elk": _log_lookup.elk_enabled,
+            "testrail": _testrail_client.enabled,
+            "rag": _rag_engine is not None,
+        },
     }
 
-
-# Webhook endpoint
+# Webhook listener
 @app.post("/webhook/jira")
 async def jira_webhook(request: Request):
     """
-    Receive a Jira webhook event and run the full pipeline:
+    Receive a Jira webhook event and run it through the agent pipeline.
 
-    1. Validate signature (if WEBHOOK_SECRET is set).
-    2. Parse payload into JiraWebhookEvent.
-    3. Run through EventFilter gates.
-    4. Orchestrate: classify → context → draft → store.
+    1. Parse + validate payload.
+    2. EventFilter — gates on issue type, status, trigger keywords, idempotency.
+    3. Hand off to the Orchestrator.
     """
     body = await request.body()
     _verify_webhook_signature(request, body)
@@ -185,14 +207,17 @@ async def jira_webhook(request: Request):
             "event_id": result.event_id,
         }
 
-    return await _handle_comment_event(event)
+    # Orchestrate
+    return await _orchestrate(event)
 
 
-# Pipeline 
-async def _handle_comment_event(event: JiraWebhookEvent) -> dict:
-    """
-    Full pipeline:
-      Comment → Classify → Context → Draft → Store
+# Orchestrator
+
+async def _orchestrate(event: JiraWebhookEvent):
+    """Orchestrator — runs the full agent pipeline for a comment event.
+
+    Matches the Orchestrator/Workflow Engine in the architecture diagram:
+      Comment → Classify → Context (Tooling Layer) → Draft (LLM) → Store
     """
     assert event.comment is not None
     assert event.issue is not None
@@ -248,13 +273,15 @@ async def _handle_comment_event(event: JiraWebhookEvent) -> dict:
 
 
 def _collect_context_safe(issue_key: str):
-    """Try to collect context from Jira; return minimal stub on failure."""
+    """Collect context via the Tooling Layer; return a minimal stub on failure."""
     try:
         from src.agent.context_collector import ContextCollector
 
         collector = ContextCollector(
+            jira_client=_jira_client,
             log_lookup=_log_lookup,
             testrail_client=_testrail_client,
+            git_client=_git_client,
         )
         return collector.collect(issue_key)
     except Exception as exc:
@@ -274,7 +301,7 @@ def _collect_context_safe(issue_key: str):
             collection_duration_ms=0.0,
         )
 
-#  Draft retrieval   
+# Draft store — retrieval
 @app.get("/drafts/{draft_id}")
 async def get_draft(draft_id: str):
     """Retrieve a stored draft by ID."""
@@ -298,23 +325,16 @@ async def list_drafts(
     total = draft_store.count(issue_key=issue_key, status=status)
     return {"count": len(drafts), "total": total, "drafts": drafts}
 
-
-# Approval / rejection
-@app.post("/approve/{draft_id}")
-async def approve_draft_short(draft_id: str, request: Request):
-    """Approve a draft by path — POST /approve/draft_abc123."""
-    return await _do_approve(draft_id, request)
-
-
+# Approval service + action executor
 @app.post("/approve")
 async def approve_draft(request: Request):
     """
-    Approve a draft response.
+    Approve a draft — human-in-the-loop gate.
 
-    1. Mark draft as APPROVED in SQLite.
-    2. Post the comment to Jira (if Jira client is configured).
-    3. Mark draft as POSTED in SQLite.
-    4. Send notification.
+    1. Mark draft APPROVED in store.
+    2. Action Executor: post comment to Jira (approved only).
+    3. Mark draft POSTED.
+    4. Notify via Approval Service (Teams / Email).
     """
     try:
         payload = await request.json()
@@ -339,7 +359,7 @@ async def approve_draft(request: Request):
         issue_key = draft_data.get("issue_key", "")
         jira_posted = False
 
-        # 2. Post to Jira (action executor)
+        # Action executor — post to Jira only on explicit approval
         if post_to_jira and _jira_client is not None:
             try:
                 body = draft_data.get("body", "")
@@ -420,7 +440,7 @@ async def _do_reject(draft_id: str, request: Request, feedback: str = ""):
         raise HTTPException(status_code=500, detail="Failed to reject draft")
 
 
-# ── RAG endpoints ─────────────────────────────────────────────────────
+# RAG pipeline
 
 @app.post("/rag/ingest/pdf")
 async def rag_ingest_pdf(file: UploadFile = File(...)):
@@ -466,13 +486,14 @@ async def rag_ingest_text(request: Request):
     except Exception:
         raise HTTPException(status_code=400, detail="Invalid JSON payload")
 
-    title = payload.get("title")
+    # Accept both 'source_title' and 'title' for flexibility
+    title = payload.get("source_title") or payload.get("title")
     text = payload.get("text")
     if not title or not text:
-        raise HTTPException(status_code=400, detail="'title' and 'text' are required")
+        raise HTTPException(status_code=400, detail="'source_title' and 'text' are required")
 
     source_type = payload.get("source_type", "text")
-    url = payload.get("url")
+    url = payload.get("source_url") or payload.get("url")
     metadata = payload.get("metadata")
 
     try:

@@ -33,6 +33,7 @@ TEMPLATES: dict[CommentType, str] = {
         "**{environment}** (Build {build_version}).\n\n"
         "**Observed:** {observation}\n\n"
         "**Repro steps (minimal):**\n{repro_steps}\n\n"
+        "{pr_evidence}"
         "Could you confirm:\n"
         "• Which build/version did you test on?\n"
         "• Your environment (OS, browser, tenant config)?\n"
@@ -60,7 +61,8 @@ TEMPLATES: dict[CommentType, str] = {
     ),
     CommentType.FIXED_VALIDATE: (
         "A fix has been deployed.\n\n"
-        "**Fix version/commit/build:** {fix_version}\n\n"
+        "**Fix version/commit/build:** {fix_version}\n"
+        "{pr_evidence}"
         "**Focused retest checklist:**\n{retest_checklist}\n\n"
         "Please verify in **{target_env}** and update the ticket status."
     ),
@@ -115,7 +117,7 @@ Output ONLY the refined reply – no markdown code fences, no explanation.
 
 
 class ResponseDrafter:
-    """Generates evidence-based draft responses with optional LLM refinement."""
+    """Generates draft responses using templates + Copilot SDK."""
 
     def __init__(
         self,
@@ -233,6 +235,9 @@ class ResponseDrafter:
             "expected_config": "See documentation",
         }
 
+        subs["pr_evidence"] = self._format_pr_evidence(context)
+        subs["elk_log_preview"] = self._format_elk_preview(context)
+
         try:
             return template.format_map(subs)
         except KeyError as exc:
@@ -240,6 +245,34 @@ class ResponseDrafter:
             return template  # return raw template on failure
 
     # Evidence and citations
+    @staticmethod
+    def _format_pr_evidence(context: ContextCollectionResult) -> str:
+        """Return a formatted Git PR evidence block (empty string if no PRs)."""
+        if not context.git_prs:
+            return ""
+        lines = ["**Related Git PRs:**"]
+        for pr in context.git_prs[:3]:
+            sha = f" (commit `{pr.merge_commit_sha}`)" if pr.merge_commit_sha else ""
+            branch_info = f" `{pr.head_branch}` → `{pr.base_branch}`" if pr.head_branch else ""
+            lines.append(
+                f"• PR #{pr.pr_number} [{pr.state}]{sha}{branch_info}: "
+                f"[{pr.pr_title}]({pr.pr_url})"
+            )
+        return "\n".join(lines) + "\n\n"
+
+    @staticmethod
+    def _format_elk_preview(context: ContextCollectionResult) -> str:
+        """Return a short ELK log preview (empty string if no ELK entries)."""
+        if not context.elk_log_entries:
+            return ""
+        lines = ["**ELK log hits:**"]
+        for entry in context.elk_log_entries[:3]:
+            level = f"[{entry.level}] " if entry.level else ""
+            preview = entry.message[:120].replace("\n", " ")
+            ts = f" @ {entry.timestamp}" if entry.timestamp else ""
+            lines.append(f"• {level}{preview}…{ts}")
+        return "\n".join(lines) + "\n\n"
+
     @staticmethod
     def _format_existing_evidence(context: ContextCollectionResult) -> str:
         """Format attachments, Jenkins links, RAG snippets, logs, and TestRail as bullet list."""
@@ -267,6 +300,17 @@ class ResponseDrafter:
                 rate = tr.get("pass_rate", 0)
                 failed = tr.get("failed", 0)
                 lines.append(f"• TestRail [{name}]: {rate}% pass, {failed} failed")
+        if context.git_prs:
+            for pr in context.git_prs[:3]:
+                sha = f" (commit `{pr.merge_commit_sha}`)" if pr.merge_commit_sha else ""
+                lines.append(
+                    f"• Git PR #{pr.pr_number} [{pr.state}]{sha}: {pr.pr_title} — {pr.pr_url}"
+                )
+        if context.elk_log_entries:
+            for entry in context.elk_log_entries[:3]:
+                preview = entry.message[:100].replace("\n", " ")
+                level = f"[{entry.level}] " if entry.level else ""
+                lines.append(f"• ELK log: {level}{preview}…")
         return "\n".join(lines) if lines else "• (none collected yet)"
 
     @staticmethod
@@ -366,6 +410,25 @@ class ResponseDrafter:
                     "url": tr.get("url", ""),
                     "excerpt": f"{tr.get('pass_rate', 0)}% pass, {tr.get('failed', 0)} failed",
                 })
+        if context.git_prs:
+            for pr in context.git_prs:
+                citation: dict[str, str] = {
+                    "source": f"Git PR #{pr.pr_number} ({pr.provider})",
+                    "url": pr.pr_url,
+                    "excerpt": (
+                        f"{pr.state} — {pr.pr_title}"
+                        + (f" | merged commit {pr.merge_commit_sha}" if pr.merge_commit_sha else "")
+                        + (f" | branch {pr.head_branch} → {pr.base_branch}" if pr.head_branch else "")
+                    ),
+                }
+                citations.append(citation)
+        if context.elk_log_entries:
+            for entry in context.elk_log_entries[:5]:
+                cid = f" [{entry.correlation_id}]" if entry.correlation_id else ""
+                citations.append({
+                    "source": f"ELK log{cid}",
+                    "excerpt": entry.message[:200],
+                })
         return citations
 
     @staticmethod
@@ -400,6 +463,16 @@ class ResponseDrafter:
                 parts.append(bm["version"])
             if parts:
                 evidence.append(f"Build: {', '.join(parts)}")
+        if context.git_prs:
+            for pr in context.git_prs:
+                label = f"Git PR #{pr.pr_number} ({pr.state}): {pr.pr_title}"
+                if pr.merge_commit_sha:
+                    label += f" — commit {pr.merge_commit_sha}"
+                evidence.append(label)
+        if context.elk_log_entries:
+            for entry in context.elk_log_entries[:5]:
+                cid = entry.correlation_id or "elk"
+                evidence.append(f"ELK log ({entry.level or 'INFO'}): {cid}")
         return evidence
 
     # Suggested labels & actions

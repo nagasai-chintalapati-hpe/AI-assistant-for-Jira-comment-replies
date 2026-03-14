@@ -9,13 +9,15 @@ Collects:
   • Jenkins console-log URLs (heuristic detection)
   • RAG snippets (semantic search against indexed documents)
   • Log entries (Jenkins console output / local log files)
+  • ELK / OpenSearch log entries
   • TestRail results (failed / retest tests for related runs)
+  • Git PR metadata (linked PRs from GitHub / GitLab / Bitbucket)
   • Build metadata (commit, version, deploy timestamp)
 """
 
 from __future__ import annotations
 
-import logging
+import re
 from datetime import datetime, timezone
 from typing import Any, Optional
 
@@ -40,11 +42,13 @@ class ContextCollector:
         rag_engine=None,
         log_lookup=None,
         testrail_client=None,
+        git_client=None,
     ):
         self.jira_client = jira_client or JiraClient()
         self._rag_engine = rag_engine
         self._log_lookup = log_lookup
         self._testrail = testrail_client
+        self._git_client = git_client
 
     # Public API
 
@@ -114,6 +118,15 @@ class ContextCollector:
             # 10. TestRail results (if run IDs detected in comments/description)
             testrail_results = self._fetch_testrail_results(issue_data)
 
+            # 11. Git PR metadata (PR refs detected in issue text + comments)
+            git_prs = self._fetch_git_prs(issue_data)
+
+            # 12. ELK log entries (search by summary keywords + build/env)
+            elk_log_entries = self._fetch_elk_logs(
+                issue_data=issue_data,
+                build_metadata=build_metadata,
+            )
+
             # Build IssueContext
             issue_context = IssueContext(
                 issue_key=issue_key,
@@ -142,6 +155,8 @@ class ContextCollector:
                 log_entries=log_entries or None,
                 testrail_results=testrail_results or None,
                 build_metadata=build_metadata,
+                git_prs=git_prs or None,
+                elk_log_entries=elk_log_entries or None,
                 collection_timestamp=datetime.now(timezone.utc),
                 collection_duration_ms=elapsed_ms,
             )
@@ -151,6 +166,77 @@ class ContextCollector:
             raise
 
     # Private helpers
+
+    def _fetch_git_prs(
+        self, issue_data: dict[str, Any]
+    ) -> list:
+        """Detect PR references in the issue and fetch Git PR metadata.
+
+        Scans the issue description and all comments for PR number patterns.
+        Returns a list of GitPRMetadata objects (up to 3).
+        """
+        if not self._git_client:
+            return []
+
+        fields = issue_data.get("fields", {})
+        desc = fields.get("description", "") or ""
+        comment_bodies: list[str] = [
+            c.get("body", "")
+            for c in fields.get("comment", {}).get("comments", [])
+            if c.get("body")
+        ]
+
+        try:
+            return self._git_client.fetch_prs_for_issue(
+                issue_text=desc,
+                comment_texts=comment_bodies,
+                max_prs=3,
+            )
+        except Exception as exc:
+            logger.warning("Git PR fetch failed: %s", exc)
+            return []
+
+    def _fetch_elk_logs(
+        self,
+        issue_data: dict[str, Any],
+        build_metadata: Optional[dict[str, str]],
+    ) -> list:
+        """Search ELK for log entries related to the issue.
+
+        Uses the issue summary as the search query, enriched with
+        build_id and environment from build_metadata when available.
+        """
+        if not self._log_lookup or not getattr(self._log_lookup, "elk_enabled", False):
+            return []
+
+        fields = issue_data.get("fields", {})
+        summary = fields.get("summary", "") or ""
+        if not summary:
+            return []
+
+        # Try to extract useful keywords from summary (first 200 chars)
+        query = summary[:200]
+
+        build_id: Optional[str] = None
+        env: Optional[str] = None
+        if build_metadata:
+            build_id = build_metadata.get("version") or build_metadata.get("commit")
+            env = None  # environment comes from IssueContext, not build metadata
+
+        # Use environment from issue fields if available
+        issue_env = fields.get("environment") or ""
+        if issue_env and isinstance(issue_env, str):
+            env = issue_env[:100]
+
+        try:
+            return self._log_lookup.search_elk_logs(
+                query=query,
+                build_id=build_id,
+                env=env or None,
+            )
+        except Exception as exc:
+            logger.warning("ELK log search failed: %s", exc)
+            return []
 
     def _fetch_log_entries(self, jenkins_links: list[str]) -> list:
         """Fetch Jenkins console output for detected URLs."""
@@ -184,8 +270,6 @@ class ContextCollector:
         """
         if not self._testrail:
             return None
-
-        import re
 
         run_ids: set[int] = set()
         fields = issue_data.get("fields", {})
