@@ -59,9 +59,7 @@ from pathlib import Path
 logger = logging.getLogger(__name__)
 
 
-# ------------------------------------------------------------------ #
-# Webhook signature verification (HMAC-SHA256)                         #
-# ------------------------------------------------------------------ #
+# Webhook signature verification (HMAC-SHA256)
 
 def _verify_signature(body: bytes, signature_header: Optional[str]) -> bool:
     """Verify the Jira webhook HMAC-SHA256 signature.
@@ -90,9 +88,7 @@ def _verify_signature(body: bytes, signature_header: Optional[str]) -> bool:
     return hmac.compare_digest(expected, provided)
 
 
-# ------------------------------------------------------------------ #
-# In-memory rate limiter (swap for Redis in HA deployments)            #
-# ------------------------------------------------------------------ #
+# Rate limiter (per-IP, Redis-backed or in-memory)
 
 class _RateLimiter:
     """Per-IP rate limiter — Redis-backed when REDIS_ENABLED=true, else in-memory.
@@ -174,15 +170,11 @@ class _RateLimiter:
         self._counts[key].append(now)
         return True
 
-# ------------------------------------------------------------------ #
-# Module-level singletons                                              #
-# ------------------------------------------------------------------ #
+# Module-level singletons
 
-# Draft store + idempotency — both share the same SQLite file
 draft_store = SQLiteDraftStore(db_path=settings.app.db_path)
 _idempotency_store = SQLiteIdempotencyStore(db_path=settings.app.db_path)
 
-# Webhook listener — event gate (SQLite-backed idempotency survives restarts)
 event_filter = EventFilter(idempotency_store=_idempotency_store)
 
 # Rate limiter (per IP)
@@ -596,6 +588,14 @@ async def approve_draft(request: Request):
         if post_to_jira and _jira_client is not None:
             try:
                 body = draft_data.get("body", "")
+                # Write draft to Jira custom field for auditability (if configured)
+                field_id = settings.jira.draft_field_id
+                if field_id:
+                    _jira_client.update_custom_field(issue_key, field_id, body)
+                    logger.info(
+                        "Draft %s stored in Jira field %s on %s",
+                        draft_id, field_id, issue_key,
+                    )
                 _jira_client.add_comment(issue_key, body)
                 draft_store.mark_posted(draft_id)
                 jira_posted = True

@@ -55,20 +55,20 @@
           <input type="hidden" name="body" id="approveBody" value="{{ draft.body }}" />
           <button type="submit" class="btn btn-success"
             onclick="document.getElementById('approveBody').value=document.getElementById('draftBody').value">
-            ✅ Approve &amp; Post to Jira
+            Approve &amp; Post to Jira
           </button>
         </form>
 
         <!-- Reject -->
         <button class="btn btn-danger" data-bs-toggle="collapse" data-bs-target="#rejectForm">
-          ❌ Reject
+          Reject
         </button>
 
         <!-- Copy to clipboard -->
-        <button class="btn btn-outline-secondary" onclick="copyDraft()">📋 Copy</button>
+        <button class="btn btn-outline-secondary" onclick="copyDraft()">Copy</button>
 
         <!-- Open Jira -->
-        <a href="{{ jira_url }}" target="_blank" class="btn btn-outline-primary">🔗 Open in Jira</a>
+        <a href="{{ jira_url }}" target="_blank" class="btn btn-outline-primary">Open in Jira</a>
 
       </div>
 
@@ -111,7 +111,7 @@
     <!-- What's missing -->
     {% if missing_context %}
     <div class="card mb-3 border-warning">
-      <div class="card-header bg-warning bg-opacity-10 fw-semibold small">⚠️ What's Missing</div>
+      <div class="card-header bg-warning bg-opacity-10 fw-semibold small">What's Missing</div>
       <ul class="list-group list-group-flush">
         {% for item in missing_context %}
         <li class="list-group-item small">{{ item }}</li>
@@ -123,7 +123,7 @@
     <!-- Citations / Evidence -->
     {% if draft.citations %}
     <div class="card mb-3">
-      <div class="card-header fw-semibold small">📎 Evidence &amp; Citations</div>
+      <div class="card-header fw-semibold small">Evidence &amp; Citations</div>
       <ul class="list-group list-group-flush">
         {% for c in draft.citations %}
         <li class="list-group-item small">
@@ -143,7 +143,7 @@
     <!-- Evidence used -->
     {% if draft.evidence_used %}
     <div class="card mb-3">
-      <div class="card-header fw-semibold small">🔍 Evidence Used</div>
+      <div class="card-header fw-semibold small">Evidence Used</div>
       <ul class="list-group list-group-flush">
         {% for e in draft.evidence_used %}
         <li class="list-group-item small text-muted">{{ e }}</li>
@@ -154,7 +154,7 @@
 
     <!-- Draft metadata -->
     <div class="card">
-      <div class="card-header fw-semibold small">ℹ️ Metadata</div>
+      <div class="card-header fw-semibold small">ℹMetadata</div>
       <ul class="list-group list-group-flush small">
         <li class="list-group-item d-flex justify-content-between">
           <span class="text-muted">Created</span>
@@ -187,8 +187,8 @@ function copyDraft() {
   const text = document.getElementById('draftBody').value;
   navigator.clipboard.writeText(text).then(() => {
     const btn = event.target;
-    btn.textContent = '✅ Copied!';
-    setTimeout(() => btn.textContent = '📋 Copy', 2000);
+    btn.textContent = ' Copied!';
+    setTimeout(() => btn.textContent = 'Copy', 2000);
   });
 }
 </script>

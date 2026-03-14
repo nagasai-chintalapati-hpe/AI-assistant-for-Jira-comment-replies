@@ -23,7 +23,7 @@
     <div class="d-flex align-items-center gap-3">
       <span class="nav-tagline d-none d-md-inline">Draft Review UI</span>
       <button id="themeToggle" class="theme-toggle-btn" title="Toggle light/dark theme" onclick="toggleTheme()">
-        <span id="themeIcon">☀️</span>
+        <span id="themeIcon"></span>
       </button>
     </div>
   </nav>
@@ -73,7 +73,7 @@
 
     function applyTheme(theme) {
       document.documentElement.setAttribute('data-theme', theme);
-      document.getElementById('themeIcon').textContent = theme === 'dark' ? '☀️' : '🌙';
+      document.getElementById('themeIcon').textContent = theme === 'dark' ? '' : '';
       localStorage.setItem(THEME_KEY, theme);
     }
 
