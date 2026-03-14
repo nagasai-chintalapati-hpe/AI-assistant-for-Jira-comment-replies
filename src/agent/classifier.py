@@ -26,7 +26,7 @@ from src.models.classification import CommentClassification, CommentType
 
 logger = logging.getLogger(__name__)
 
-# keyword rules (fallback) 
+# Keyword rules (fallback)
 
 _KEYWORD_RULES: list[tuple[list[str], CommentType, str, list[str]]] = [
     # (keywords, type, reasoning, missing_context)
@@ -117,49 +117,50 @@ class CommentClassifier:
     Attempts Copilot SDK-based classification first; falls back to keyword rules.
     """
 
-    def __init__(self, api_key: Optional[str] = None, model: str = "gpt-4"):
+    def __init__(self, llm_client=None, api_key: Optional[str] = None, model: str = "gpt-4"):
         """
         Args:
-            api_key: Copilot SDK API key.  If *None* the classifier
-                     operates in keyword-only mode (safe for CI / tests).
-            model:   Model name to use via Copilot SDK.
+            llm_client: :class:`~src.llm.client.CopilotLLMClient` instance.
+                        If *None*, the module-level singleton is used.
+                        Pass a disabled client for keyword-only mode (CI / tests).
+            api_key:    Deprecated — kept for backward compatibility only.
+            model:      Deprecated — kept for backward compatibility only.
         """
-        self._client = None
-        self._model = model
-        if api_key:
-            try:
-                from openai import OpenAI  # Copilot SDK compatible client
-
-                self._client = OpenAI(api_key=api_key)
-                logger.info("Copilot SDK classifier initialised (model=%s)", model)
-            except Exception as exc:
-                logger.warning("Could not initialise Copilot SDK (%s) – using keyword fallback", exc)
+        if llm_client is None:
+            from src.llm.client import get_llm_client
+            llm_client = get_llm_client()
+        self._llm = llm_client
+        if self._llm.enabled:
+            logger.info(
+                "Copilot SDK classifier initialised (backend=%s)", self._llm.backend
+            )
+        else:
+            logger.info("Copilot LLM not available — using keyword-only classification")
 
     # Public API
 
     def classify(self, comment: Comment) -> CommentClassification:
         """Classify *comment* using Copilot SDK → keyword fallback chain."""
 
-        # 1. Try Copilot SDK
-        if self._client is not None:
+        # 1. Try Copilot LLM
+        if self._llm.enabled:
             sdk_result = self._classify_with_copilot(comment)
             if sdk_result is not None and sdk_result.confidence >= 0.6:
                 return sdk_result
             logger.info(
-                "Copilot SDK classification low-confidence (%.2f) – falling back to keywords",
+                "Copilot LLM classification low-confidence (%.2f) – falling back to keywords",
                 sdk_result.confidence if sdk_result else 0,
             )
 
         # 2. Keyword fallback
         return self._classify_with_keywords(comment)
 
-    # Copilot SDK path
+    # Copilot LLM path
 
     def _classify_with_copilot(self, comment: Comment) -> Optional[CommentClassification]:
-        """Call Copilot SDK and parse structured output."""
+        """Call Copilot LLM and parse structured JSON output."""
         try:
-            response = self._client.chat.completions.create(  # type: ignore[union-attr]
-                model=self._model,
+            text = self._llm.complete(
                 messages=[
                     {"role": "system", "content": _COPILOT_SYSTEM_PROMPT},
                     {
@@ -173,7 +174,8 @@ class CommentClassifier:
                 max_tokens=256,
                 temperature=0.1,
             )
-            text = response.choices[0].message.content.strip()
+            if not text:
+                return None
             data = json.loads(text)
 
             ctype = CommentType(data["comment_type"])
@@ -186,7 +188,7 @@ class CommentClassifier:
                 suggested_questions=data.get("suggested_questions"),
             )
         except Exception as exc:
-            logger.warning("Copilot SDK classification failed: %s", exc)
+            logger.warning("Copilot LLM classification failed: %s", exc)
             return None
 
     # Keyword path

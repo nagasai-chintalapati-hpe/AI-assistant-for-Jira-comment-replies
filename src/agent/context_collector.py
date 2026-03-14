@@ -44,12 +44,14 @@ class ContextCollector:
         log_lookup=None,
         testrail_client=None,
         git_client=None,
+        s3_fetcher=None,
     ):
         self.jira_client = jira_client or JiraClient()
         self._rag_engine = rag_engine
         self._log_lookup = log_lookup
         self._testrail = testrail_client
         self._git_client = git_client
+        self._s3_fetcher = s3_fetcher
 
     # Public API
 
@@ -127,6 +129,9 @@ class ContextCollector:
                 build_metadata=build_metadata,
             )
 
+            # 13. S3 artifacts (build artifacts stored for the detected build ID)
+            s3_artifacts = self._fetch_s3_artifacts(build_metadata)
+
             # Build IssueContext
             issue_context = IssueContext(
                 issue_key=issue_key,
@@ -161,6 +166,7 @@ class ContextCollector:
                 build_metadata=build_metadata,
                 git_prs=git_prs or None,
                 elk_log_entries=elk_log_entries or None,
+                s3_artifacts=s3_artifacts or None,
                 collection_timestamp=datetime.now(timezone.utc),
                 collection_duration_ms=elapsed_ms,
             )
@@ -240,6 +246,31 @@ class ContextCollector:
             )
         except Exception as exc:
             logger.warning("ELK log search failed: %s", exc)
+            return []
+
+    def _fetch_s3_artifacts(
+        self, build_metadata: Optional[dict[str, str]]
+    ) -> list[dict]:
+        """Fetch S3 build artifacts for the build ID found in *build_metadata*.
+
+        Returns a list of artifact metadata dicts (no raw bytes).
+        Returns an empty list when S3 is not configured or no build ID is known.
+        """
+        if not self._s3_fetcher or not getattr(self._s3_fetcher, "enabled", False):
+            return []
+
+        build_id = None
+        if build_metadata:
+            build_id = build_metadata.get("version") or build_metadata.get("commit")
+
+        if not build_id:
+            return []
+
+        try:
+            artifacts = self._s3_fetcher.fetch_artifacts_for_build(build_id)
+            return [a.to_dict() for a in artifacts]
+        except Exception as exc:
+            logger.warning("S3 artifact fetch failed for build %s: %s", build_id, exc)
             return []
 
     def _fetch_log_entries(self, jenkins_links: list[str]) -> list:

@@ -114,17 +114,22 @@ Output ONLY the refined reply – no markdown code fences, no explanation.
 class ResponseDrafter:
     """Generates draft responses using templates + Copilot SDK."""
 
-    def __init__(self, api_key: Optional[str] = None, model: str = "gpt-4"):
-        self._client = None
-        self._model = model
-        if api_key:
-            try:
-                from openai import OpenAI  # Copilot SDK compatible client
-
-                self._client = OpenAI(api_key=api_key)
-                logger.info("Copilot SDK drafter initialised (model=%s)", model)
-            except Exception as exc:
-                logger.warning("Could not initialise Copilot SDK drafter: %s", exc)
+    def __init__(self, llm_client=None, api_key: Optional[str] = None, model: str = "gpt-4"):
+        """
+        Args:
+            llm_client: :class:`~src.llm.client.CopilotLLMClient` instance.
+                        If *None*, the module-level singleton is used.
+            api_key:    Deprecated — kept for backward compatibility only.
+            model:      Deprecated — kept for backward compatibility only.
+        """
+        if llm_client is None:
+            from src.llm.client import get_llm_client
+            llm_client = get_llm_client()
+        self._llm = llm_client
+        if self._llm.enabled:
+            logger.info("Copilot SDK drafter initialised (backend=%s)", self._llm.backend)
+        else:
+            logger.info("Copilot LLM not available — using template-only drafts")
 
     # Public API
     def draft(
@@ -139,7 +144,7 @@ class ResponseDrafter:
         template_body = self._fill_template(comment, classification, context)
 
         # 2. Optional Copilot SDK refinement
-        if self._client is not None:
+        if self._llm.enabled:
             refined = self._refine_with_copilot(template_body, comment)
             draft_body = refined or template_body
         else:
@@ -151,7 +156,10 @@ class ResponseDrafter:
         # 4. Build evidence_used list from RAG snippets
         evidence_used = self._build_evidence_used(context)
 
-        # 5. Assemble Draft
+        # 5. Hallucination check — flag drafts with specific claims but no evidence
+        hallucination_flag = self._detect_hallucination(draft_body, citations)
+
+        # 6. Assemble Draft
         return Draft(
             draft_id=f"draft_{int(datetime.now(timezone.utc).timestamp())}",
             issue_key=comment.issue_key,
@@ -167,33 +175,67 @@ class ResponseDrafter:
             evidence_used=evidence_used or None,
             classification_type=classification.comment_type.value,
             classification_reasoning=classification.reasoning,
+            hallucination_flag=hallucination_flag,
         )
 
     # Copilot SDK refinement
     def _refine_with_copilot(self, draft_text: str, comment: Comment) -> Optional[str]:
-        """Optionally polish the template-filled draft with Copilot SDK."""
-        try:
-            response = self._client.chat.completions.create(  # type: ignore[union-attr]
-                model=self._model,
-                messages=[
-                    {"role": "system", "content": _REFINE_SYSTEM},
-                    {
-                        "role": "user",
-                        "content": (
-                            f"Original developer comment on {comment.issue_key}:\n"
-                            f'"""\n{comment.body}\n"""\n\n'
-                            f"DRAFT reply:\n"
-                            f'"""\n{draft_text}\n"""'
-                        ),
-                    },
-                ],
-                max_tokens=512,
-                temperature=0.3,
-            )
-            return response.choices[0].message.content.strip()
-        except Exception as exc:
-            logger.warning("Copilot SDK refinement failed: %s", exc)
-            return None
+        """Polish the template-filled draft using Copilot LLM."""
+        return self._llm.complete(
+            messages=[
+                {"role": "system", "content": _REFINE_SYSTEM},
+                {
+                    "role": "user",
+                    "content": (
+                        f"Original developer comment on {comment.issue_key}:\n"
+                        f'"""\n{comment.body}\n"""\n\n'
+                        f"DRAFT reply:\n"
+                        f'"""\n{draft_text}\"""'
+                    ),
+                },
+            ],
+            max_tokens=512,
+            temperature=0.3,
+        )
+
+    @staticmethod
+    def _detect_hallucination(
+        body: str, citations: list[dict[str, str]]
+    ) -> bool:
+        """Flag potential hallucinations — specific claims with no supporting citations.
+
+        Heuristic: if the draft body references specific technical facts
+        (build numbers, version strings, commit hashes) but the citations
+        list is empty, those "facts" may have been invented by the LLM.
+
+        Returns
+        -------
+        bool
+            ``True`` when specific claims are detected **and** citations
+            list is empty.  ``False`` otherwise (no claims, or evidence
+            was provided).
+        """
+        import re
+
+        _CLAIM_PATTERNS = [
+            r"Build\s*#\d+",                                # "Build #123"
+            r"\bcommit\s+[0-9a-f]{7,40}\b",               # "commit abc1234"
+            r"\bv?\d+\.\d+\.\d+[-+.\w]*\b",              # version "1.2.3" / "v2.3.1-rc1"
+            r"\b(passed|failed|skipped)\s+\d+\s+tests?\b", # "failed 5 tests"
+        ]
+        has_claim = any(
+            re.search(pat, body, re.IGNORECASE) for pat in _CLAIM_PATTERNS
+        )
+        if not has_claim:
+            return False
+        if citations:
+            # Evidence citations exist — claims are supported
+            return False
+        logger.warning(
+            "Hallucination flag set — draft contains specific technical claims "
+            "but has no supporting evidence citations"
+        )
+        return True
     
     # Template filling
     def _fill_template(
