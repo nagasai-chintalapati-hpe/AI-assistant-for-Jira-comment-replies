@@ -1,12 +1,14 @@
-"""
-Webhook event filtering and validation.
+"""Webhook event filtering and validation.
 
-Applies the gate rules described in the architecture doc:
-  • Issue type must be Bug / Defect
-  • Issue status in an allowed set (In Progress, Ready for QA, Reopened, Open)
-  • Comment author should belong to the developer group OR trigger
-    heuristic keywords ("cannot repro", "fixed in", "need logs", etc.)
-  • Idempotency: duplicate event IDs are rejected
+Five gates applied in order:
+  1. Event type  — comment_created / comment_updated only
+  2. Idempotency — duplicate event IDs rejected
+  3. Issue type  — Bug / Defect only
+  4. Status      — allowed status set (see ALLOWED_STATUSES)
+  5. Presence    — must have both issue and comment fields
+
+Keyword matching is informational only (debug log).
+The classifier uses keywords downstream — they are not a gate here.
 """
 
 from __future__ import annotations
@@ -30,6 +32,15 @@ ALLOWED_STATUSES: set[str] = {
     "Reopened",
     "To Do",
     "In Review",
+    "Cannot_reproduce",
+    "Cannot Reproduce",
+    "In Testing",
+    "Under Review",
+    "Pending",
+    "Blocked",
+    "Closed",
+    "Resolved",
+    "Done",
 }
 
 HANDLED_EVENTS: set[str] = {"comment_created", "comment_updated", "jira:issue_updated"}
@@ -78,15 +89,16 @@ class FilterResult:
 
 
 class EventFilter:
-    """
-    Stateful filter that gates incoming Jira webhook events.
+    """Stateful filter that gates incoming Jira webhook events.
 
-    Tracks seen event IDs for idempotency within the lifetime of the
-    process (swap with Redis / DB for production).
+    Idempotency is maintained in both an in-memory set (fast path) and an
+    optional persistent store (survives service restarts). Pass a
+    :class:`~src.storage.sqlite_store.SQLiteIdempotencyStore` for production.
     """
 
-    def __init__(self) -> None:
-        self._seen_event_ids: set[str] = set()
+    def __init__(self, idempotency_store=None) -> None:
+        self._seen_event_ids: set[str] = set()  # In-memory fast-path cache
+        self._store = idempotency_store           # Optional persistent back-end
 
     # Public API
 
@@ -100,9 +112,9 @@ class EventFilter:
                 reason=f"Unhandled event type: {event.webhookEvent}",
             )
 
-        # 2. Idempotency
+        # 2. Idempotency (in-memory cache + optional persistent store)
         eid = event.event_id
-        if eid in self._seen_event_ids:
+        if self._is_seen(eid):
             return FilterResult(
                 accepted=False,
                 reason=f"Duplicate event (already processed): {eid}",
@@ -133,16 +145,17 @@ class EventFilter:
                 event_id=eid,
             )
 
-        # 6. Comment author / keyword heuristic
+        # 6. Comment author / keyword heuristic (informational only)
+        # All comments on Bug/Defect issues are processed. Keywords are used
+        # downstream by the classifier to improve draft quality, not to gate here.
         if not self._comment_is_relevant(event):
-            return FilterResult(
-                accepted=False,
-                reason="Comment does not match developer-group or keyword heuristics",
-                event_id=eid,
+            logger.debug(
+                "Comment %s has no trigger keywords — processing anyway (issue type: %s)",
+                eid, issue_type,
             )
 
-        # All gates passed – mark as seen
-        self._seen_event_ids.add(eid)
+        # All gates passed – mark as seen (memory + optional persistent store)
+        self._mark_seen(eid)
         logger.info("Event %s accepted for processing", eid)
         return FilterResult(accepted=True, reason="accepted", event_id=eid)
 
@@ -161,6 +174,22 @@ class EventFilter:
         body_lower = event.comment.body.lower()
         return any(kw in body_lower for kw in TRIGGER_KEYWORDS)
 
+    # Idempotency helpers
+
+    def _is_seen(self, eid: str) -> bool:
+        """Return True if *eid* has already been processed."""
+        if eid in self._seen_event_ids:
+            return True
+        if self._store is not None:
+            return self._store.is_seen(eid)
+        return False
+
+    def _mark_seen(self, eid: str) -> None:
+        """Record *eid* as processed in both the in-memory cache and the store."""
+        self._seen_event_ids.add(eid)
+        if self._store is not None:
+            self._store.mark_seen(eid)
+
     def reset(self) -> None:
-        """Clear the idempotency set (useful in tests)."""
+        """Clear the idempotency cache (in-memory only; useful in tests)."""
         self._seen_event_ids.clear()

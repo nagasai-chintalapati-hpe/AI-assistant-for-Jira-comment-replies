@@ -92,7 +92,7 @@ class TestEventFilter:
         assert "not Bug/Defect" in result.reason
 
     def test_reject_disallowed_status(self, event_filter):
-        payload = _make_payload(status="Done")
+        payload = _make_payload(status="Archived")
         event = JiraWebhookEvent(**payload)
         result = event_filter.evaluate(event)
         assert result.accepted is False
@@ -110,12 +110,13 @@ class TestEventFilter:
         result = event_filter.evaluate(event)
         assert result.accepted is False
 
-    def test_reject_no_keyword_match(self, event_filter):
+    def test_accept_comment_without_keywords(self, event_filter):
+        """All comments on Bug/Defect issues are accepted — keyword matching
+        is informational only (used by classifier, not as a gate)."""
         payload = _make_payload(comment_body="Looks good to me!")
         event = JiraWebhookEvent(**payload)
         result = event_filter.evaluate(event)
-        assert result.accepted is False
-        assert "keyword" in result.reason.lower() or "heuristic" in result.reason.lower()
+        assert result.accepted is True
 
     def test_idempotency_rejects_duplicate(self, event_filter):
         payload = _make_payload()
