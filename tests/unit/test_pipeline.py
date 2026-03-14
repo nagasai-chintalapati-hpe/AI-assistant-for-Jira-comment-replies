@@ -3,7 +3,7 @@
 import pytest
 from fastapi.testclient import TestClient
 
-from src.api.app import app, event_filter, draft_store
+from src.api.app import app, event_filter, draft_store, _idempotency_store
 
 
 @pytest.fixture(autouse=True)
@@ -11,9 +11,11 @@ def _reset_state():
     """Clear shared state between tests."""
     event_filter.reset()
     draft_store.clear()
+    _idempotency_store.clear()
     yield
     event_filter.reset()
     draft_store.clear()
+    _idempotency_store.clear()
 
 
 client = TestClient(app)

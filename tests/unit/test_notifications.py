@@ -13,10 +13,7 @@ from src.integrations.notifications import (
 )
 
 
-# ===================================================================== #
-#  TeamsNotifier                                                         #
-# ===================================================================== #
-
+# TeamsNotifier
 class TestTeamsNotifier:
     def test_disabled_when_no_url(self):
         t = TeamsNotifier()
@@ -42,8 +39,17 @@ class TestTeamsNotifier:
         assert result is True
         mock_post.assert_called_once()
         payload = mock_post.call_args.kwargs.get("json") or mock_post.call_args[1]["json"]
-        assert payload["@type"] == "MessageCard"
-        assert "DEFECT-123" in payload["summary"]
+        # AdaptiveCard format (upgraded from legacy MessageCard)
+        assert payload["type"] == "message"
+        attachments = payload["attachments"]
+        assert len(attachments) == 1
+        assert attachments[0]["contentType"] == "application/vnd.microsoft.card.adaptive"
+        card_body = attachments[0]["content"]["body"]
+        # First element is a Container whose first item is the title TextBlock
+        container_items = card_body[0]["items"]
+        title_block = container_items[0]
+        assert title_block["type"] == "TextBlock"
+        assert "DEFECT-123" in title_block["text"]
 
     @patch("src.integrations.notifications.requests.post")
     def test_notify_draft_approved(self, mock_post):
@@ -89,23 +95,30 @@ class TestTeamsNotifier:
         assert result is False
 
     def test_build_card_structure(self):
-        card = TeamsNotifier._build_card(
+        t = TeamsNotifier(webhook_url="https://outlook.office.com/webhook/test")
+        card = t._build_adaptive_card(
             title="Test Title",
             facts={"Key": "Value"},
             body="Body text",
-            color="0078D7",
+            style="accent",
+            draft_id="d1",
+            issue_key="X-1",
         )
-        assert card["@type"] == "MessageCard"
-        assert card["themeColor"] == "0078D7"
-        assert len(card["sections"]) == 1
-        assert card["sections"][0]["activityTitle"] == "Test Title"
-        assert card["sections"][0]["facts"][0]["name"] == "Key"
+        assert card["type"] == "message"
+        attachments = card["attachments"]
+        assert attachments[0]["contentType"] == "application/vnd.microsoft.card.adaptive"
+        content = attachments[0]["content"]
+        assert content["type"] == "AdaptiveCard"
+        container = content["body"][0]
+        assert container["style"] == "accent"
+        assert container["items"][0]["text"] == "Test Title"
+        fact_set = container["items"][1]
+        assert fact_set["type"] == "FactSet"
+        assert fact_set["facts"][0]["title"] == "Key"
+        assert fact_set["facts"][0]["value"] == "Value"
 
 
-# ===================================================================== #
-#  EmailNotifier                                                         #
-# ===================================================================== #
-
+# EmailNotifier
 class TestEmailNotifier:
     def test_disabled_when_no_host(self):
         e = EmailNotifier()
@@ -205,10 +218,7 @@ class TestEmailNotifier:
         assert result is False
 
 
-# ===================================================================== #
-#  NotificationService (facade)                                          #
-# ===================================================================== #
-
+# NotificationService
 class TestNotificationService:
     def test_any_enabled_false_when_both_disabled(self):
         ns = NotificationService()
