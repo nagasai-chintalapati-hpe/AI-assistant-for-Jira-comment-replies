@@ -8,13 +8,16 @@ Collects:
   • Changelog (status transitions)
   • Jenkins console-log URLs (heuristic detection)
   • RAG snippets (semantic search against indexed documents)
+  • Log entries (Jenkins console output / local log files)
+  • TestRail results (failed / retest tests for related runs)
+  • Build metadata (commit, version, deploy timestamp)
 """
 
 from __future__ import annotations
 
 import logging
 from datetime import datetime, timezone
-from typing import Optional
+from typing import Any, Optional
 
 from src.integrations.jira import JiraClient, _ensure_text
 from src.models.context import (
@@ -35,9 +38,13 @@ class ContextCollector:
         self,
         jira_client: Optional[JiraClient] = None,
         rag_engine=None,
+        log_lookup=None,
+        testrail_client=None,
     ):
         self.jira_client = jira_client or JiraClient()
         self._rag_engine = rag_engine
+        self._log_lookup = log_lookup
+        self._testrail = testrail_client
 
     # Public API
 
@@ -98,6 +105,15 @@ class ContextCollector:
                 description=fields.get("description", "") or "",
             )
 
+            # 8. Log entries (Jenkins console output for detected URLs)
+            log_entries = self._fetch_log_entries(jenkins_links)
+
+            # 9. Build metadata (from first Jenkins URL)
+            build_metadata = self._fetch_build_metadata(jenkins_links)
+
+            # 10. TestRail results (if run IDs detected in comments/description)
+            testrail_results = self._fetch_testrail_results(issue_data)
+
             # Build IssueContext
             issue_context = IssueContext(
                 issue_key=issue_key,
@@ -123,6 +139,9 @@ class ContextCollector:
                 issue_context=issue_context,
                 jenkins_links=jenkins_links or None,
                 rag_snippets=rag_snippets or None,
+                log_entries=log_entries or None,
+                testrail_results=testrail_results or None,
+                build_metadata=build_metadata,
                 collection_timestamp=datetime.now(timezone.utc),
                 collection_duration_ms=elapsed_ms,
             )
@@ -132,6 +151,70 @@ class ContextCollector:
             raise
 
     # Private helpers
+
+    def _fetch_log_entries(self, jenkins_links: list[str]) -> list:
+        """Fetch Jenkins console output for detected URLs."""
+        if not self._log_lookup or not jenkins_links:
+            return []
+        try:
+            return self._log_lookup.fetch_jenkins_logs_for_urls(jenkins_links)
+        except Exception as exc:
+            logger.warning("Log fetch failed: %s", exc)
+            return []
+
+    def _fetch_build_metadata(
+        self, jenkins_links: list[str]
+    ) -> Optional[dict[str, str]]:
+        """Extract build metadata from the first Jenkins URL."""
+        if not self._log_lookup or not jenkins_links:
+            return None
+        try:
+            return self._log_lookup.get_build_metadata(jenkins_links[0])
+        except Exception as exc:
+            logger.warning("Build metadata fetch failed: %s", exc)
+            return None
+
+    def _fetch_testrail_results(
+        self, issue_data: dict[str, Any]
+    ) -> Optional[list[dict[str, Any]]]:
+        """Look for TestRail run IDs in the issue and fetch summaries.
+
+        Searches the description and comments for patterns like
+        ``R12345`` or ``run/12345`` to find TestRail run references.
+        """
+        if not self._testrail:
+            return None
+
+        import re
+
+        run_ids: set[int] = set()
+        fields = issue_data.get("fields", {})
+
+        # Search description
+        desc = fields.get("description", "") or ""
+        if isinstance(desc, str):
+            for m in re.findall(r"(?:R|run[/\s]?)(\d{4,})", desc, re.IGNORECASE):
+                run_ids.add(int(m))
+
+        # Search comments
+        for c in fields.get("comment", {}).get("comments", []):
+            body = c.get("body", "")
+            if isinstance(body, str):
+                for m in re.findall(r"(?:R|run[/\s]?)(\d{4,})", body, re.IGNORECASE):
+                    run_ids.add(int(m))
+
+        if not run_ids:
+            return None
+
+        results: list[dict[str, Any]] = []
+        for rid in list(run_ids)[:3]:  # limit to 3 runs
+            try:
+                summary = self._testrail.get_run_summary(rid)
+                results.append(summary)
+            except Exception as exc:
+                logger.warning("TestRail run %d fetch failed: %s", rid, exc)
+
+        return results or None
 
     def _query_rag(
         self,

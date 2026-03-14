@@ -14,6 +14,9 @@ env/
 # Environment
 .env
 
+# SQLite data
+.data/
+
 # Test cache
 .pytest_cache/
 

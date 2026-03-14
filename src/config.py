@@ -99,11 +99,19 @@ class ConfluenceConfig:
 
 @dataclass(frozen=True)
 class TestRailConfig:
-    """TestRail integration configuration."""
+    """TestRail integration configuration.
+
+    Auth priority:
+      1. API key (production — stateless, no expiry)
+      2. Session cookie (dev/testing — fallback for SSO instances)
+    """
 
     base_url: str = os.getenv("TESTRAIL_BASE_URL", "")
     username: str = os.getenv("TESTRAIL_USERNAME", "")
     api_key: str = os.getenv("TESTRAIL_API_KEY", "")
+    session_cookie: str = os.getenv("TESTRAIL_SESSION_COOKIE", "")
+    project_id: int = int(os.getenv("TESTRAIL_PROJECT_ID", "0"))
+    suite_id: int = int(os.getenv("TESTRAIL_SUITE_ID", "0"))
 
 
 @dataclass(frozen=True)
