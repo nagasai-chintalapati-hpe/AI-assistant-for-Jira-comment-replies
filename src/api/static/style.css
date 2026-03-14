@@ -1,37 +1,290 @@
-/* Jira Comment Assistant — Review UI */
+/* ───────────────────────────────────────────────
+   Jira Comment Assistant — HPE Brand Theme
+   Primary: #01A982 (HPE Green)
+   Accent:  #000000 (Black)
+   Light/Dark theme support via data-theme attribute
+─────────────────────────────────────────────── */
 
-body {
-  background-color: #f8f9fa;
-  font-size: 0.9rem;
+/* ── Shared brand tokens ── */
+:root {
+  --hpe-green:       #01A982;
+  --hpe-green-dark:  #007d61;
+  --hpe-green-light: #e6f7f3;
+  --hpe-black:       #000000;
 }
 
-.navbar-brand {
+/* ── Dark theme (default) ── */
+[data-theme="dark"] {
+  --bg-body:         #1a1a1a;
+  --bg-surface:      #242424;
+  --bg-surface-alt:  #2e2e2e;
+  --border-color:    #3a3a3a;
+  --text-primary:    #e8e8e8;
+  --text-muted:      #999999;
+  --text-heading:    #ffffff;
+  --navbar-bg:       #000000;
+  --footer-bg:       #000000;
+  --input-bg:        #2a2a2a;
+  --input-text:      #e8e8e8;
+  --card-shadow:     rgba(0, 0, 0, 0.4);
+}
+
+/* ── Light theme ── */
+[data-theme="light"] {
+  --bg-body:         #f5f5f5;
+  --bg-surface:      #ffffff;
+  --bg-surface-alt:  #f0f0f0;
+  --border-color:    #e8e8e8;
+  --text-primary:    #1a1a1a;
+  --text-muted:      #666666;
+  --text-heading:    #000000;
+  --navbar-bg:       #000000;
+  --footer-bg:       #000000;
+  --input-bg:        #ffffff;
+  --input-text:      #1a1a1a;
+  --card-shadow:     rgba(0, 0, 0, 0.07);
+}
+
+/* ── Sticky footer layout ── */
+html, body {
+  height: 100%;
+}
+
+body {
+  display: flex;
+  flex-direction: column;
+  background-color: var(--bg-body);
+  font-size: 0.9rem;
+  color: var(--text-primary);
+  font-family: "Metric", "Arial", sans-serif;
+  transition: background-color 0.2s, color 0.2s;
+}
+
+.page-wrapper {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+}
+
+.page-wrapper > .container {
+  flex: 1;
+}
+
+a {
+  color: var(--hpe-green);
+}
+a:hover {
+  color: var(--hpe-green-dark);
+}
+
+/* ── Navbar ── */
+.hpe-navbar {
+  background-color: var(--navbar-bg);
+  border-bottom: 3px solid var(--hpe-green);
+  padding: 0.5rem 1.5rem;
+}
+
+.hpe-navbar .navbar-brand {
   font-size: 1rem;
+  font-weight: 700;
+  color: #ffffff;
+  letter-spacing: 0.02em;
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+.hpe-navbar .navbar-brand:hover {
+  color: var(--hpe-green);
+}
+
+.hpe-navbar .nav-tagline {
+  color: var(--hpe-green);
+  font-size: 0.78rem;
+  letter-spacing: 0.04em;
+}
+
+.hpe-logo {
+  height: 28px;
+  width: auto;
+  object-fit: contain;
+  border-radius: 3px;
+}
+
+/* ── Theme toggle button ── */
+.theme-toggle-btn {
+  background: transparent;
+  border: 1px solid rgba(255,255,255,0.25);
+  border-radius: 20px;
+  padding: 0.2rem 0.6rem;
+  font-size: 1rem;
+  line-height: 1.4;
+  cursor: pointer;
+  color: #ffffff;
+  transition: border-color 0.2s, background 0.2s;
+}
+
+.theme-toggle-btn:hover {
+  background: rgba(1, 169, 130, 0.2);
+  border-color: var(--hpe-green);
+}
+
+/* ── Footer ── */
+.hpe-footer {
+  background-color: var(--footer-bg);
+  border-top: 3px solid var(--hpe-green);
+  color: #aaaaaa;
+  font-size: 0.78rem;
+  padding: 1rem 1.5rem;
+  flex-shrink: 0;
+}
+
+.hpe-footer a {
+  color: var(--hpe-green);
+  text-decoration: none;
+}
+
+.hpe-footer a:hover {
+  color: #ffffff;
+  text-decoration: underline;
+}
+
+.hpe-footer .footer-names {
+  color: #ffffff;
+  font-weight: 600;
+}
+
+.footer-logo {
+  height: 22px;
+  width: auto;
+  object-fit: contain;
+  border-radius: 3px;
+  opacity: 0.85;
+}
+
+.footer-github-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+/* ── Cards ── */
+.card {
+  border-radius: 0.4rem;
+  border: 1px solid var(--border-color);
+  box-shadow: 0 1px 4px var(--card-shadow);
+  background-color: var(--bg-surface);
+  color: var(--text-primary);
+  transition: background-color 0.2s, border-color 0.2s;
+}
+
+.card-header {
+  background-color: var(--bg-surface-alt);
+  border-bottom: 1px solid var(--border-color);
+}
+
+/* ── List group ── */
+.list-group-item {
+  background-color: var(--bg-surface);
+  border-color: var(--border-color);
+  color: var(--text-primary);
 }
 
 .list-group-item-action:hover {
-  background-color: #f0f4ff;
+  background-color: var(--hpe-green-light);
+  border-left: 3px solid var(--hpe-green);
+  color: #1a1a1a;
 }
 
+[data-theme="dark"] .list-group-item-action:hover {
+  background-color: rgba(1, 169, 130, 0.15);
+  color: var(--text-primary);
+}
+
+/* ── Buttons ── */
+.btn-success,
+.btn-success:focus {
+  background-color: var(--hpe-green);
+  border-color: var(--hpe-green);
+  color: #ffffff;
+}
+
+.btn-success:hover,
+.btn-success:active {
+  background-color: var(--hpe-green-dark);
+  border-color: var(--hpe-green-dark);
+}
+
+.btn-outline-primary {
+  color: var(--hpe-green);
+  border-color: var(--hpe-green);
+}
+
+.btn-outline-primary:hover {
+  background-color: var(--hpe-green);
+  border-color: var(--hpe-green);
+  color: #ffffff;
+}
+
+/* ── Badges ── */
+.badge {
+  font-weight: 500;
+}
+
+.badge.bg-success {
+  background-color: var(--hpe-green) !important;
+}
+
+/* ── Draft textarea ── */
 .font-monospace {
   font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
 }
 
 textarea.font-monospace {
   resize: vertical;
-  background-color: #fdfdfd;
+  background-color: var(--input-bg);
+  border-color: var(--border-color);
+  color: var(--input-text);
 }
 
-.card {
-  border-radius: 0.5rem;
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.06);
+textarea.font-monospace:focus {
+  border-color: var(--hpe-green);
+  box-shadow: 0 0 0 0.2rem rgba(1, 169, 130, 0.2);
 }
 
-.card-header {
-  background-color: #f1f3f5;
-  border-bottom: 1px solid #e9ecef;
+/* ── Filter form inputs ── */
+.form-control,
+.form-select {
+  background-color: var(--input-bg);
+  border-color: var(--border-color);
+  color: var(--input-text);
 }
 
-.badge {
-  font-weight: 500;
+.form-control:focus,
+.form-select:focus {
+  border-color: var(--hpe-green);
+  box-shadow: 0 0 0 0.2rem rgba(1, 169, 130, 0.2);
+  background-color: var(--input-bg);
+  color: var(--input-text);
+}
+
+/* ── Alerts ── */
+.alert {
+  background-color: var(--bg-surface-alt);
+  border-color: var(--border-color);
+  color: var(--text-primary);
+}
+
+/* ── Page heading accent ── */
+h4, h5 {
+  color: var(--text-heading);
+}
+
+.text-muted {
+  color: var(--text-muted) !important;
+}
+
+.hpe-accent {
+  color: var(--hpe-green);
+  font-weight: 700;
 }

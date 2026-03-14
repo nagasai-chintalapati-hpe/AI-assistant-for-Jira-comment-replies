@@ -21,8 +21,13 @@ from fastapi.responses import JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from pydantic import ValidationError
+import hashlib
+import hmac
+import json as _json
 import logging
 import os
+import time as _time
+from collections import defaultdict
 from datetime import datetime, timezone
 from typing import Optional
 
@@ -37,11 +42,15 @@ from src.integrations.notifications import (
     EmailNotifier,
     NotificationService,
 )
-from src.storage.sqlite_store import SQLiteDraftStore
+from src.storage.sqlite_store import SQLiteDraftStore, SQLiteIdempotencyStore
 from src.integrations.log_lookup import LogLookupService
 from src.integrations.testrail import TestRailClient
 from src.integrations.jira import JiraClient
 from src.integrations.git import GitClient
+from src.integrations.s3_connector import S3ArtifactFetcher
+from src.queue.broker import MessageBroker
+from src.llm.client import get_llm_client
+from src.utils.redactor import redact_with_stats
 from src.config import settings
 
 import shutil
@@ -49,18 +58,142 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
-# Webhook listener — event gate
-event_filter = EventFilter()
 
-# LLM / Drafter — optional Copilot SDK polish
-_COPILOT_API_KEY: Optional[str] = os.getenv("COPILOT_API_KEY")
-_COPILOT_MODEL: str = os.getenv("COPILOT_MODEL", "gpt-4")
+# ------------------------------------------------------------------ #
+# Webhook signature verification (HMAC-SHA256)                         #
+# ------------------------------------------------------------------ #
 
-classifier = CommentClassifier(api_key=_COPILOT_API_KEY, model=_COPILOT_MODEL)
-drafter = ResponseDrafter(api_key=_COPILOT_API_KEY, model=_COPILOT_MODEL)
+def _verify_signature(body: bytes, signature_header: Optional[str]) -> bool:
+    """Verify the Jira webhook HMAC-SHA256 signature.
+
+    Returns ``True`` when:
+      * Signature validation is disabled (``VALIDATE_WEBHOOK_SIGNATURE=false``
+        or ``JIRA_WEBHOOK_SECRET`` not set)  — safe default for local dev.
+      * The computed HMAC matches the ``X-Hub-Signature`` header value.
+    Returns ``False`` when validation is enabled but the signature is missing
+    or doesn't match.
+    """
+    if not settings.webhook.validate_signature or not settings.webhook.secret:
+        return True
+    if not signature_header:
+        logger.warning("Webhook received without X-Hub-Signature header — rejecting")
+        return False
+    try:
+        scheme, provided = signature_header.split("=", 1)
+        if scheme != "sha256":
+            return False
+    except ValueError:
+        return False
+    expected = hmac.new(
+        settings.webhook.secret.encode("utf-8"), body, hashlib.sha256
+    ).hexdigest()
+    return hmac.compare_digest(expected, provided)
+
+
+# ------------------------------------------------------------------ #
+# In-memory rate limiter (swap for Redis in HA deployments)            #
+# ------------------------------------------------------------------ #
+
+class _RateLimiter:
+    """Per-IP rate limiter — Redis-backed when REDIS_ENABLED=true, else in-memory.
+
+    Redis mode uses a sorted-set sliding window (one key per client IP).
+    Falls back to an in-process ``defaultdict`` when Redis is unavailable.
+    """
+
+    def __init__(self, rpm: int = 60) -> None:
+        self._rpm = rpm
+        self._counts: dict[str, list[float]] = defaultdict(list)
+        self._redis = self._init_redis()
+
+    def _init_redis(self):
+        """Try to connect to Redis; return client or ``None`` on failure."""
+        if not settings.redis.enabled:
+            return None
+        try:
+            import redis  # type: ignore[import]
+
+            url = settings.redis.url or (
+                f"redis://:{settings.redis.password}@{settings.redis.host}"
+                f":{settings.redis.port}/{settings.redis.db}"
+                if settings.redis.password
+                else f"redis://{settings.redis.host}:{settings.redis.port}/{settings.redis.db}"
+            )
+            client = redis.from_url(url, socket_connect_timeout=2)
+            client.ping()
+            logger.info(
+                "Redis rate limiter connected (%s:%s)",
+                settings.redis.host,
+                settings.redis.port,
+            )
+            return client
+        except ImportError:
+            logger.warning(
+                "redis-py not installed — using in-memory rate limiter "
+                "(install redis for multi-process HA)"
+            )
+        except Exception as exc:
+            logger.warning(
+                "Redis unavailable (%s) — falling back to in-memory rate limiter", exc
+            )
+        return None
+
+    def is_allowed(self, key: str) -> bool:
+        if not settings.rate_limit.enabled:
+            return True
+        if self._redis is not None:
+            return self._is_allowed_redis(key)
+        return self._is_allowed_memory(key)
+
+    def _is_allowed_redis(self, key: str) -> bool:
+        """Sliding-window rate limit using a Redis sorted set."""
+        try:
+            import time as _time_module
+
+            now = _time_module.time()
+            window_key = f"rl:{key}"
+            pipe = self._redis.pipeline()
+            pipe.zremrangebyscore(window_key, 0, now - 60)
+            pipe.zcard(window_key)
+            pipe.zadd(window_key, {str(now): now})
+            pipe.expire(window_key, 120)
+            _, count, *_ = pipe.execute()
+            return int(count) < self._rpm
+        except Exception as exc:
+            logger.warning(
+                "Redis rate-limit check failed (%s) — allowing request", exc
+            )
+            return True
+
+    def _is_allowed_memory(self, key: str) -> bool:
+        now = _time.monotonic()
+        window_start = now - 60.0
+        self._counts[key] = [t for t in self._counts[key] if t > window_start]
+        if len(self._counts[key]) >= self._rpm:
+            return False
+        self._counts[key].append(now)
+        return True
+
+# ------------------------------------------------------------------ #
+# Module-level singletons                                              #
+# ------------------------------------------------------------------ #
+
+# Draft store + idempotency — both share the same SQLite file
+draft_store = SQLiteDraftStore(db_path=settings.app.db_path)
+_idempotency_store = SQLiteIdempotencyStore(db_path=settings.app.db_path)
+
+# Webhook listener — event gate (SQLite-backed idempotency survives restarts)
+event_filter = EventFilter(idempotency_store=_idempotency_store)
+
+# Rate limiter (per IP)
+_rate_limiter = _RateLimiter(rpm=settings.rate_limit.max_requests_per_minute)
+
+# LLM / Drafter — Copilot SDK (GitHub Copilot API) or local llama.cpp
+_llm_client = get_llm_client()
+classifier = CommentClassifier(llm_client=_llm_client)
+drafter = ResponseDrafter(llm_client=_llm_client)
 
 # Draft store — persistent SQLite
-draft_store = SQLiteDraftStore(db_path=settings.app.db_path)
 
 # Tooling layer — connectors (each degrades gracefully when unconfigured)
 _log_lookup = LogLookupService()
@@ -79,6 +212,12 @@ try:
         _git_client = None
 except Exception:
     _git_client = None
+
+# S3 artifact fetcher (gracefully disabled when S3_BUCKET not configured)
+_s3_fetcher = S3ArtifactFetcher()
+
+# Message broker — RabbitMQ async queue (gracefully disabled by default)
+_broker = MessageBroker()
 
 # Approval service — notification channels (Teams + Email)
 _teams = TeamsNotifier(webhook_url=os.getenv("TEAMS_WEBHOOK_URL"))
@@ -119,6 +258,28 @@ def _get_rag_ingester():
     return _rag_ingester
 
 
+def _sync_queue_handler(event_dict: dict) -> None:
+    """Synchronous queue consumer callback — called by the RabbitMQ daemon thread.
+
+    Deserialises the raw event dict, runs it through the full agent pipeline,
+    and logs the result.  Errors are propagated so the broker can nack the
+    message (preventing infinite re-delivery).
+    """
+    import asyncio
+
+    event = JiraWebhookEvent(**event_dict)
+    loop = asyncio.new_event_loop()
+    try:
+        result = loop.run_until_complete(_orchestrate(event))
+        logger.info(
+            "Queue event processed — draft_id=%s issue=%s",
+            result.get("draft_id"),
+            result.get("issue_key"),
+        )
+    finally:
+        loop.close()
+
+
 @asynccontextmanager
 async def lifespan(app_instance: FastAPI):
     """Application lifespan — startup / shutdown."""
@@ -131,7 +292,14 @@ async def lifespan(app_instance: FastAPI):
         "Starting Jira Comment Assistant API (v0.6.0) — notifications: %s",
         ", ".join(channels) if channels else "none",
     )
+    if _broker.enabled:
+        _broker.start_consumer(_sync_queue_handler)
+        logger.info(
+            "RabbitMQ consumer started — queue=%s", settings.queue.queue_name
+        )
     yield
+    _broker.stop()
+    logger.info("Jira Comment Assistant API stopped")
 
 
 app = FastAPI(
@@ -168,8 +336,21 @@ async def health_check():
             "elk": _log_lookup.elk_enabled,
             "testrail": _testrail_client.enabled,
             "rag": _rag_engine is not None,
+            "s3": _s3_fetcher.enabled,
+            "queue": _broker.enabled,
+            "redis": _rate_limiter._redis is not None,
         },
     }
+
+
+@app.get("/metrics")
+async def get_metrics():
+    """Return aggregated draft quality and processing metrics.
+
+    Response includes acceptance rate, average confidence, average human
+    rating, hallucination flag count, and breakdown by classification type.
+    """
+    return draft_store.get_metrics()
 
 # Webhook listener
 @app.post("/webhook/jira")
@@ -177,16 +358,29 @@ async def jira_webhook(request: Request):
     """
     Receive a Jira webhook event and run it through the agent pipeline.
 
-    1. Parse + validate payload.
-    2. EventFilter — gates on issue type, status, trigger keywords, idempotency.
-    3. Hand off to the Orchestrator.
+    1. Rate-limit check (per client IP).
+    2. HMAC-SHA256 signature validation (``X-Hub-Signature`` header).
+    3. Parse + validate payload.
+    4. EventFilter — gates on issue type, status, trigger keywords, idempotency.
+    5. Hand off to the Orchestrator.
     """
+    # 1. Rate limiting
+    client_ip = (request.client.host if request.client else "unknown")
+    if not _rate_limiter.is_allowed(client_ip):
+        raise HTTPException(status_code=429, detail="Rate limit exceeded — try again later")
+
+    # 2. Signature validation
+    body = await request.body()
+    sig_header = request.headers.get("X-Hub-Signature")
+    if not _verify_signature(body, sig_header):
+        raise HTTPException(status_code=401, detail="Invalid webhook signature")
+
+    # 3. Parse
     try:
-        payload = await request.json()
+        payload = _json.loads(body)
     except Exception:
         raise HTTPException(status_code=400, detail="Invalid JSON payload")
 
-    # Parse
     try:
         event = JiraWebhookEvent(**payload)
     except ValidationError as exc:
@@ -213,7 +407,21 @@ async def jira_webhook(request: Request):
             "event_id": result.event_id,
         }
 
-    # Orchestrate
+    # Orchestrate — via message queue (async) or synchronous fallback
+    if _broker.enabled:
+        published = _broker.publish(payload)
+        if published:
+            return JSONResponse(
+                status_code=202,
+                content={
+                    "status": "queued",
+                    "event_id": event.event_id,
+                    "issue_key": event.issue_key,
+                },
+            )
+        logger.warning(
+            "Queue publish failed — falling back to synchronous processing"
+        )
     return await _orchestrate(event)
 
 
@@ -246,7 +454,17 @@ async def _orchestrate(event: JiraWebhookEvent):
         body=event.comment.body,
     )
 
-    # 2. Classify
+    # 2. Redact PII from comment body before sending to Copilot LLM
+    _redaction = redact_with_stats(comment.body)
+    if _redaction.redaction_count > 0:
+        logger.info(
+            "Redacted %d sensitive pattern(s) from comment %s",
+            _redaction.redaction_count,
+            comment.comment_id,
+        )
+        comment = comment.model_copy(update={"body": _redaction.text})
+
+    # 3. Classify
     classification = classifier.classify(comment)
     logger.info(
         "Classified %s comment %s → %s (%.2f)",
@@ -256,17 +474,17 @@ async def _orchestrate(event: JiraWebhookEvent):
         classification.confidence,
     )
 
-    # 3. Context collection (deferred if Jira creds not configured)
+    # 4. Context collection (deferred if Jira creds not configured)
     context = _collect_context_safe(comment.issue_key)
 
-    # 4. Draft response
+    # 5. Draft response
     draft = drafter.draft(comment, classification, context)
     logger.info("Generated draft %s for %s", draft.draft_id, comment.issue_key)
 
-    # 5. Store (persistent SQLite)
+    # 6. Store (persistent SQLite)
     draft_store.save(draft, classification=classification.comment_type.value)
 
-    # 6. Notify (Teams / Email — optional, fire-and-forget)
+    # 7. Notify (Teams / Email — optional, fire-and-forget)
     notifier.notify_draft_generated(
         draft_id=draft.draft_id,
         issue_key=comment.issue_key,
@@ -296,6 +514,7 @@ def _collect_context_safe(issue_key: str):
             log_lookup=_log_lookup,
             testrail_client=_testrail_client,
             git_client=_git_client,
+            s3_fetcher=_s3_fetcher if _s3_fetcher.enabled else None,
         )
         return collector.collect(issue_key)
     except Exception as exc:
@@ -703,7 +922,30 @@ async def ui_reject(
     return RedirectResponse(url=f"/ui/drafts/{draft_id}", status_code=303)
 
 
-if __name__ == "__main__":
+@app.post("/ui/drafts/{draft_id}/rate")
+async def rate_draft(draft_id: str, request: Request):
+    """Rate a draft response with a 1–5 star quality score.
+
+    Request body: ``{"rating": <int 1-5>}``
+
+    Ratings are persisted to SQLite and aggregated in ``GET /metrics``.
+    """
+    try:
+        payload = await request.json()
+        rating = payload.get("rating")
+        if not isinstance(rating, int) or not (1 <= rating <= 5):
+            raise HTTPException(
+                status_code=400, detail="'rating' must be an integer 1–5"
+            )
+        ok = draft_store.save_rating(draft_id, rating)
+        if not ok:
+            raise HTTPException(status_code=404, detail="Draft not found")
+        return {"status": "rated", "draft_id": draft_id, "rating": rating}
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.error("Error rating draft %s: %s", draft_id, exc)
+        raise HTTPException(status_code=500, detail="Failed to rate draft")
     import uvicorn
 
     uvicorn.run(app, host="0.0.0.0", port=8000)
