@@ -1,10 +1,10 @@
-# 🤖 AI Assistant for Jira Comment Replies
+# AI Assistant for Jira Comment Replies
 
 > **Automatically drafts context-aware replies to Jira defect comments — with human review before anything is posted.**
 
 A FastAPI service that listens for Jira webhook events, classifies engineer comments into one of eight intent buckets, gathers corroborating evidence from TestRail, Git, Jenkins/ELK logs, Confluence, and S3 artifacts, then drafts a structured reply for a human reviewer to approve or edit before it reaches Jira.
 
-**Authors:** Nagasai Chintalapati · Yousef Konswah — HPE Intern Project 2025
+**Authors:** Nagasai Chintalapati and Yousef Konswah — HPE Intern Project 2026
 
 ---
 
