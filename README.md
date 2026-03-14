@@ -4,7 +4,7 @@
 
 A **FastAPI** service that listens for Jira webhook events, classifies engineer comments into one of eight intent buckets, collects corroborating evidence from TestRail, Git, Jenkins/ELK, Confluence, and S3, then drafts a structured reply for a human to approve or edit before it reaches Jira.
 
-**Authors:** Nagasai Chintalapati · Yousef Konswah — HPE Intern Project 2025
+**Authors:** Nagasai Chintalapati · Yousef Konswah — HPE Intern Project 2026
 
 ---
 
@@ -255,15 +255,6 @@ Copy `.env.example` to `.env`.
 | `S3_BUCKET` / `S3_ENDPOINT_URL` | S3 or MinIO bucket |
 | `TEAMS_WEBHOOK_URL` | Teams incoming webhook for AdaptiveCard notifications |
 
-### Infrastructure (optional)
-
-| Variable | Default | Description |
-|---|---|---|
-| `RATE_LIMIT_RPM` | `60` | Max webhook requests per minute per IP |
-| `REDIS_ENABLED` | `false` | Distributed rate-limit state |
-| `QUEUE_ENABLED` | `false` | Async processing via RabbitMQ |
-| `RABBITMQ_URL` | `amqp://guest:guest@localhost/` | AMQP URL |
-
 ---
 
 ## Running Tests
@@ -277,8 +268,6 @@ pytest tests/unit/ --cov=src --cov-report=html && open htmlcov/index.html
 # Integration tests (requires live Jira + TestRail credentials)
 pytest tests/integration/ -v
 ```
-
-367 tests, 0 failures.
 
 ---
 
