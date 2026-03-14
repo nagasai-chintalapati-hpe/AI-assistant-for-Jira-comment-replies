@@ -59,7 +59,7 @@ class CopilotLLMClient:
         else:
             self._init_copilot()
 
-    # Backend initialisation                                             
+    # Backend initialisation
     def _init_copilot(self) -> None:
         """Set up the GitHub Copilot API client (OpenAI-compatible SDK)."""
         api_key = settings.copilot.api_key
@@ -119,9 +119,7 @@ class CopilotLLMClient:
             )
             self._init_copilot()
 
-    # ------------------------------------------------------------------ #
-    # Properties                                                           #
-    # ------------------------------------------------------------------ #
+    # Properties
 
     @property
     def enabled(self) -> bool:
@@ -133,9 +131,7 @@ class CopilotLLMClient:
         """Active backend identifier: ``'copilot'`` | ``'local'`` | ``'none'``."""
         return self._active_backend
 
-    # ------------------------------------------------------------------ #
-    # Public API                                                           #
-    # ------------------------------------------------------------------ #
+    # Public API
 
     def complete(
         self,
@@ -170,9 +166,7 @@ class CopilotLLMClient:
             return self._complete_copilot(messages, _max, _temp)
         return None
 
-    # ------------------------------------------------------------------ #
-    # Private: backend dispatch                                            #
-    # ------------------------------------------------------------------ #
+    # Private dispatch
 
     def _complete_copilot(
         self,
@@ -210,9 +204,7 @@ class CopilotLLMClient:
             return None
 
 
-# ------------------------------------------------------------------ #
-# Module-level singleton                                               #
-# ------------------------------------------------------------------ #
+# Module-level singleton
 
 _singleton: Optional[CopilotLLMClient] = None
 

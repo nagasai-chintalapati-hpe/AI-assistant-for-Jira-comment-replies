@@ -374,9 +374,7 @@ class SQLiteDraftStore:
         }
 
 
-# --------------------------------------------------------------------------- #
-# Idempotency store                                                             #
-# --------------------------------------------------------------------------- #
+# Idempotency store
 
 _IDEMPOTENCY_SCHEMA = """\
 CREATE TABLE IF NOT EXISTS seen_events (

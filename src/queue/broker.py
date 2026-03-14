@@ -70,9 +70,7 @@ class MessageBroker:
         if settings.queue.enabled:
             self._connect()
 
-    # ---------------------------------------------------------------------- #
-    # Connection management                                                    #
-    # ---------------------------------------------------------------------- #
+    # Connection management
 
     def _connect(self) -> None:
         """Establish a blocking AMQP connection and declare the queue."""
@@ -106,18 +104,14 @@ class MessageBroker:
             self._connection = None
             self._channel = None
 
-    # ---------------------------------------------------------------------- #
-    # Properties                                                               #
-    # ---------------------------------------------------------------------- #
+    # Properties
 
     @property
     def enabled(self) -> bool:
         """``True`` when a live RabbitMQ channel is available."""
         return self._channel is not None
 
-    # ---------------------------------------------------------------------- #
-    # Producer                                                                 #
-    # ---------------------------------------------------------------------- #
+    # Producer
 
     def publish(self, event_dict: dict) -> bool:
         """Publish a webhook event payload to the queue.
@@ -156,9 +150,7 @@ class MessageBroker:
             logger.error("Failed to publish event to RabbitMQ queue: %s", exc)
             return False
 
-    # ---------------------------------------------------------------------- #
-    # Consumer                                                                 #
-    # ---------------------------------------------------------------------- #
+    # Consumer
 
     def start_consumer(self, handler: Callable[[dict], None]) -> None:
         """Start a daemon thread that consumes and processes events from the queue.
@@ -213,9 +205,7 @@ class MessageBroker:
         self._consumer_thread.start()
         logger.info("RabbitMQ consumer thread started")
 
-    # ---------------------------------------------------------------------- #
-    # Shutdown                                                                 #
-    # ---------------------------------------------------------------------- #
+    # Shutdown
 
     def stop(self) -> None:
         """Signal the consumer thread to stop and close the AMQP connection."""

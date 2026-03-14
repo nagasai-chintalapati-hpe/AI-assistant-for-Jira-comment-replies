@@ -29,9 +29,7 @@ from typing import Any, Optional
 logger = logging.getLogger(__name__)
 
 
-# --------------------------------------------------------------------------- #
-# Data model                                                                   #
-# --------------------------------------------------------------------------- #
+# Data model
 
 @dataclass
 class S3Artifact:
@@ -59,9 +57,7 @@ class S3Artifact:
         }
 
 
-# --------------------------------------------------------------------------- #
-# Fetcher                                                                      #
-# --------------------------------------------------------------------------- #
+# Fetcher
 
 class S3ArtifactFetcher:
     """Fetch build artifacts and log files from S3-compatible storage.
@@ -100,9 +96,7 @@ class S3ArtifactFetcher:
         if self._bucket and self._access_key and self._secret_key:
             self._client = self._init_boto3()
 
-    # ---------------------------------------------------------------------- #
-    # Initialisation                                                           #
-    # ---------------------------------------------------------------------- #
+    # Initialisation
 
     def _init_boto3(self) -> Any:
         """Attempt to create a boto3 S3 client; return ``None`` on failure."""
@@ -133,18 +127,14 @@ class S3ArtifactFetcher:
             logger.warning("S3 client init failed: %s", exc)
         return None
 
-    # ---------------------------------------------------------------------- #
-    # Properties                                                               #
-    # ---------------------------------------------------------------------- #
+    # Properties
 
     @property
     def enabled(self) -> bool:
         """``True`` when a boto3 client is available for direct bucket access."""
         return self._client is not None
 
-    # ---------------------------------------------------------------------- #
-    # Public API                                                               #
-    # ---------------------------------------------------------------------- #
+    # Public API
 
     def fetch_by_presigned_url(self, url: str, timeout: int = 30) -> bytes:
         """Download an object via a pre-signed URL (no credentials required).

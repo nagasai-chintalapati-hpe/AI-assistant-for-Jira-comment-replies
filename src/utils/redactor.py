@@ -21,9 +21,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
-# ------------------------------------------------------------------ #
-# Compiled patterns (ordered — most specific first)                   #
-# ------------------------------------------------------------------ #
+# Compiled patterns (ordered — most specific first)
 
 _PATTERNS: list[tuple[re.Pattern, str]] = [
     # Authorization: Bearer <token>
@@ -75,9 +73,7 @@ class RedactionResult:
     text: str
 
 
-# ------------------------------------------------------------------ #
-# Public API                                                           #
-# ------------------------------------------------------------------ #
+# Public API
 
 
 def redact(text: str) -> str:
