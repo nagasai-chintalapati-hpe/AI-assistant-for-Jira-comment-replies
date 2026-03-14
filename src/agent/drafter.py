@@ -8,12 +8,10 @@ Flow:
 """
 
 from __future__ import annotations
-
 import json
 import logging
 from datetime import datetime, timezone
 from typing import Optional
-
 from src.models.comment import Comment
 from src.models.classification import CommentClassification, CommentType
 from src.models.context import ContextCollectionResult
@@ -102,6 +100,7 @@ TEMPLATES: dict[CommentType, str] = {
         "**Issue:** {issue_key} – {summary}"
     ),
 }
+
 # Copilot SDK refinement prompt
 _REFINE_SYSTEM = """\
 You are a QA engineer writing a reply to a developer comment on a Jira defect.
@@ -109,7 +108,6 @@ Rewrite the DRAFT below so it sounds professional, concise, and empathetic.
 Keep all factual data (build numbers, links, steps) intact. Do NOT invent facts.
 Output ONLY the refined reply – no markdown code fences, no explanation.
 """
-
 
 class ResponseDrafter:
     """Generates draft responses using templates + Copilot SDK."""
@@ -139,26 +137,20 @@ class ResponseDrafter:
         context: ContextCollectionResult,
     ) -> Draft:
         """Generate a draft response to a comment."""
-
         # 1. Template-fill
         template_body = self._fill_template(comment, classification, context)
-
         # 2. Optional Copilot SDK refinement
         if self._llm.enabled:
             refined = self._refine_with_copilot(template_body, comment)
             draft_body = refined or template_body
         else:
             draft_body = template_body
-
         # 3. Build citations from context
         citations = self._build_citations(context)
-
         # 4. Build evidence_used list from RAG snippets
         evidence_used = self._build_evidence_used(context)
-
         # 5. Hallucination check — flag drafts with specific claims but no evidence
         hallucination_flag = self._detect_hallucination(draft_body, citations)
-
         # 6. Assemble Draft
         return Draft(
             draft_id=f"draft_{int(datetime.now(timezone.utc).timestamp())}",
@@ -202,19 +194,7 @@ class ResponseDrafter:
     def _detect_hallucination(
         body: str, citations: list[dict[str, str]]
     ) -> bool:
-        """Flag potential hallucinations — specific claims with no supporting citations.
-
-        Heuristic: if the draft body references specific technical facts
-        (build numbers, version strings, commit hashes) but the citations
-        list is empty, those "facts" may have been invented by the LLM.
-
-        Returns
-        -------
-        bool
-            ``True`` when specific claims are detected **and** citations
-            list is empty.  ``False`` otherwise (no claims, or evidence
-            was provided).
-        """
+       
         import re
 
         _CLAIM_PATTERNS = [

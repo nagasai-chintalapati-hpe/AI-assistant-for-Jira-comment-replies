@@ -16,7 +16,6 @@ Collects:
 """
 
 from __future__ import annotations
-
 import re
 from datetime import datetime, timezone
 from typing import Any, Optional
@@ -32,7 +31,6 @@ import logging
 logger = logging.getLogger(__name__)
 
 DEFAULT_COMMENT_COUNT = 10
-
 
 class ContextCollector:
     """Collects context from Jira and related systems."""
@@ -54,22 +52,12 @@ class ContextCollector:
         self._s3_fetcher = s3_fetcher
 
     # Public API
-
     def collect(
         self,
         issue_key: str,
         max_comments: int = DEFAULT_COMMENT_COUNT,
     ) -> ContextCollectionResult:
-        """
-        Collect all available context for an issue.
-
-        Args:
-            issue_key: The Jira issue key (e.g., "DEFECT-123")
-            max_comments: How many recent comments to include (default 10)
-
-        Returns:
-            ContextCollectionResult with issue context and evidence pointers
-        """
+        """ Collect all available context for an issue. """
         start_time = datetime.now(timezone.utc)
 
         try:
@@ -77,7 +65,7 @@ class ContextCollector:
             issue_data = self.jira_client.get_issue(issue_key)
             fields = issue_data.get("fields", {})
 
-            # 2. Last N comments
+            # 2. Last N comments (with author_role heuristic)
             last_comments_raw = self.jira_client.get_last_comments(
                 issue_key, n=max_comments
             )
@@ -85,7 +73,7 @@ class ContextCollector:
                 CommentSnapshot(
                     comment_id=c.get("id", ""),
                     author=c.get("author", {}).get("displayName", "unknown"),
-                    author_role=None,
+                    author_role=self._infer_author_role(c),
                     created=c.get("created", ""),
                     body=c.get("body", ""),
                 )
@@ -94,41 +82,31 @@ class ContextCollector:
 
             # 3. Attachments
             attachments = self.jira_client.get_attachments(issue_key)
-
             # 4. Linked issues
             linked_issues = self.jira_client.get_linked_issues(issue_key)
-
             # 5. Changelog
             changelog = self.jira_client.get_changelog(issue_key)
-
             # 6. Jenkins links
             jenkins_links = self.jira_client.detect_jenkins_links(issue_key)
-
-            # 7. RAG snippets (semantic search against indexed docs)
+            # 7. RAG snippets (search against indexed docs)
             rag_snippets = self._query_rag(
                 issue_key=issue_key,
                 summary=fields.get("summary", ""),
                 description=fields.get("description", "") or "",
             )
-
             # 8. Log entries (Jenkins console output for detected URLs)
             log_entries = self._fetch_log_entries(jenkins_links)
-
             # 9. Build metadata (from first Jenkins URL)
             build_metadata = self._fetch_build_metadata(jenkins_links)
-
             # 10. TestRail results (if run IDs detected in comments/description)
             testrail_results = self._fetch_testrail_results(issue_data)
-
             # 11. Git PR metadata (PR refs detected in issue text + comments)
             git_prs = self._fetch_git_prs(issue_data)
-
             # 12. ELK log entries (search by summary keywords + build/env)
             elk_log_entries = self._fetch_elk_logs(
                 issue_data=issue_data,
                 build_metadata=build_metadata,
             )
-
             # 13. S3 artifacts (build artifacts stored for the detected build ID)
             s3_artifacts = self._fetch_s3_artifacts(build_metadata)
 
@@ -152,7 +130,6 @@ class ContextCollector:
                     fields.get("comment", {}).get("comments", [])
                 ),
             )
-
             elapsed_ms = (
                 datetime.now(timezone.utc) - start_time
             ).total_seconds() * 1000
@@ -176,7 +153,6 @@ class ContextCollector:
             raise
 
     # Private helpers
-
     def _fetch_git_prs(
         self, issue_data: dict[str, Any]
     ) -> list:
@@ -211,11 +187,6 @@ class ContextCollector:
         issue_data: dict[str, Any],
         build_metadata: Optional[dict[str, str]],
     ) -> list:
-        """Search ELK for log entries related to the issue.
-
-        Uses the issue summary as the search query, enriched with
-        build_id and environment from build_metadata when available.
-        """
         if not self._log_lookup or not getattr(self._log_lookup, "elk_enabled", False):
             return []
 
@@ -223,10 +194,8 @@ class ContextCollector:
         summary = fields.get("summary", "") or ""
         if not summary:
             return []
-
         # Try to extract useful keywords from summary (first 200 chars)
         query = summary[:200]
-
         build_id: Optional[str] = None
         env: Optional[str] = None
         if build_metadata:
@@ -237,7 +206,6 @@ class ContextCollector:
         issue_env = fields.get("environment") or ""
         if issue_env and isinstance(issue_env, str):
             env = issue_env[:100]
-
         try:
             return self._log_lookup.search_elk_logs(
                 query=query,
@@ -251,11 +219,7 @@ class ContextCollector:
     def _fetch_s3_artifacts(
         self, build_metadata: Optional[dict[str, str]]
     ) -> list[dict]:
-        """Fetch S3 build artifacts for the build ID found in *build_metadata*.
-
-        Returns a list of artifact metadata dicts (no raw bytes).
-        Returns an empty list when S3 is not configured or no build ID is known.
-        """
+        """Fetch S3 build artifacts for the build ID found in *build_metadata*."""
         if not self._s3_fetcher or not getattr(self._s3_fetcher, "enabled", False):
             return []
 
@@ -335,6 +299,28 @@ class ContextCollector:
 
         return results or None
 
+    @staticmethod
+    def _infer_author_role(comment: dict[str, Any]) -> str:
+        """Infer author role from Jira comment metadata.
+
+        Uses the author's display name and email domain as a heuristic:
+          - Contains 'qa' or 'test'  → QA
+          - Contains 'devops' or 'ops' or 'sre' → DevOps
+          - Otherwise → Developer
+
+        Falls back to 'Developer' when no signal is available.
+        """
+        author = comment.get("author", {})
+        display_name = (author.get("displayName") or "").lower()
+        email = (author.get("emailAddress") or "").lower()
+        combined = f"{display_name} {email}"
+
+        if any(k in combined for k in ("qa", "test", "quality", "tester")):
+            return "QA"
+        if any(k in combined for k in ("devops", "ops", "sre", "infra", "platform")):
+            return "DevOps"
+        return "Developer"
+
     def _query_rag(
         self,
         issue_key: str,
@@ -343,19 +329,41 @@ class ContextCollector:
     ) -> list:
         """Query the RAG engine for relevant snippets.
 
-        Builds a query from the issue summary + truncated description.
+        Runs two queries:
+          1. Confluence / PDF knowledge base (summary + description)
+          2. Prior similar defects (summary only, tagged source=jira)
+
+        Returns a combined de-duplicated list capped at RAG top_k * 2.
         Returns an empty list if RAG is not configured or fails.
         """
         if self._rag_engine is None:
             return []
 
-        query_text = f"{summary}. {description[:500]}" if description else summary
+        kb_query = f"{summary}. {description[:500]}" if description else summary
+        snippets: list = []
+
+        # 1. Knowledge-base query (Confluence, PDFs, runbooks)
         try:
-            result = self._rag_engine.query(text=query_text)
-            return result.snippets
+            result = self._rag_engine.query(text=kb_query)
+            snippets.extend(result.snippets)
         except Exception as exc:
-            logger.warning("RAG query failed for %s: %s", issue_key, exc)
-            return []
+            logger.warning("RAG KB query failed for %s: %s", issue_key, exc)
+        # 2. Prior similar defects query
+        try:
+            prior_result = self._rag_engine.query(
+                text=summary,
+                where={"source": "jira"},
+            )
+            # Avoid duplicates by chunk id
+            existing_ids = {getattr(s, "chunk_id", None) for s in snippets}
+            for s in prior_result.snippets:
+                if getattr(s, "chunk_id", None) not in existing_ids:
+                    snippets.append(s)
+        except Exception as exc:
+            # prior-defect index may not exist yet — non-fatal
+            logger.debug("RAG prior-defect query failed for %s: %s", issue_key, exc)
+
+        return snippets
 
     @staticmethod
     def _extract_versions(fields: dict) -> list[str]:

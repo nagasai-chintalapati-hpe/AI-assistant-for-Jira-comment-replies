@@ -22,6 +22,7 @@ class JiraConfig:
     base_url: str = os.getenv("JIRA_BASE_URL", "")
     username: str = os.getenv("JIRA_USERNAME", "")
     api_token: str = os.getenv("JIRA_API_TOKEN", "")
+    draft_field_id: str = os.getenv("JIRA_DRAFT_FIELD_ID", "")  # e.g. customfield_10200
 
 
 @dataclass(frozen=True)

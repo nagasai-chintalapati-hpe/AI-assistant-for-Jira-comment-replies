@@ -1,22 +1,6 @@
-"""Comment classifier – determines comment intent.
-
-Strategy:
-  1. Try Copilot SDK for structured classification.
-  2. Fall back to keyword heuristics if the Copilot SDK is unavailable or low-confidence.
-
-Classification buckets:
-  • Cannot Repro
-  • Need Info / Logs
-  • Fixed — Validate
-  • By Design
-  • Duplicate / Already Fixed
-  • Blocked / Waiting
-  • Configuration Issue
-  • Other (fallback)
-"""
+"""Comment classifier – determines comment intent."""
 
 from __future__ import annotations
-
 import json
 import logging
 from typing import Optional
@@ -26,7 +10,7 @@ from src.models.classification import CommentClassification, CommentType
 
 logger = logging.getLogger(__name__)
 
-# Keyword rules (fallback)
+# Keyword rules are a fallback when LLM classification is unavailable or low-confidence.
 
 _KEYWORD_RULES: list[tuple[list[str], CommentType, str, list[str]]] = [
     # (keywords, type, reasoning, missing_context)
@@ -110,7 +94,6 @@ Respond ONLY with valid JSON – no markdown, no explanation:
 }
 """
 
-
 class CommentClassifier:
     """Classifies developer comments into predefined types.
 
@@ -138,11 +121,10 @@ class CommentClassifier:
             logger.info("Copilot LLM not available — using keyword-only classification")
 
     # Public API
-
     def classify(self, comment: Comment) -> CommentClassification:
         """Classify *comment* using Copilot SDK → keyword fallback chain."""
 
-        # 1. Try Copilot LLM
+        # 1. Copilot LLM
         if self._llm.enabled:
             sdk_result = self._classify_with_copilot(comment)
             if sdk_result is not None and sdk_result.confidence >= 0.6:
@@ -151,12 +133,10 @@ class CommentClassifier:
                 "Copilot LLM classification low-confidence (%.2f) – falling back to keywords",
                 sdk_result.confidence if sdk_result else 0,
             )
-
         # 2. Keyword fallback
         return self._classify_with_keywords(comment)
 
     # Copilot LLM path
-
     def _classify_with_copilot(self, comment: Comment) -> Optional[CommentClassification]:
         """Call Copilot LLM and parse structured JSON output."""
         try:
@@ -192,7 +172,6 @@ class CommentClassifier:
             return None
 
     # Keyword path
-
     def _classify_with_keywords(self, comment: Comment) -> CommentClassification:
         """Rule-based classification via keyword matching."""
         body_lower = comment.body.lower()
@@ -217,7 +196,6 @@ class CommentClassifier:
         )
 
     # Helpers
-
     @staticmethod
     def _default_questions(ctype: CommentType) -> Optional[list[str]]:
         """Return sensible follow-up questions per classification."""
