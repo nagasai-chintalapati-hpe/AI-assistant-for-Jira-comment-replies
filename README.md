@@ -1,10 +1,10 @@
 # AI Assistant for Jira Comment Replies
 
-> **Automatically drafts context-aware replies to Jira defect comments — with human review before anything is posted.**
+> Automatically drafts context-aware replies to Jira defect comments — with human review before anything is posted.
 
-A FastAPI service that listens for Jira webhook events, classifies engineer comments into one of eight intent buckets, gathers corroborating evidence from TestRail, Git, Jenkins/ELK logs, Confluence, and S3 artifacts, then drafts a structured reply for a human reviewer to approve or edit before it reaches Jira.
+A **FastAPI** service that listens for Jira webhook events, classifies engineer comments into one of eight intent buckets, collects corroborating evidence from TestRail, Git, Jenkins/ELK, Confluence, and S3, then drafts a structured reply for a human to approve or edit before it reaches Jira.
 
-**Authors:** Nagasai Chintalapati and Yousef Konswah — HPE Intern Project 2026
+**Authors:** Nagasai Chintalapati · Yousef Konswah — HPE Intern Project 2025
 
 ---
 
@@ -12,11 +12,11 @@ A FastAPI service that listens for Jira webhook events, classifies engineer comm
 
 | Without the assistant | With the assistant |
 |---|---|
-| Triage engineer reads the comment, manually opens TestRail, Git, ELK | Webhook fires → context collected in < 5 s |
-| Copy-pastes test case IDs, build numbers, log lines by hand | Draft pre-populated with clickable evidence links |
-| Reply quality varies by engineer and shift | Consistent tone + structure on every defect |
-| No audit trail of which evidence informed the reply | Every draft stored in SQLite + optional Jira custom field |
-| Works only when someone is at a desk | 24 × 7 first-pass coverage |
+| Engineer manually opens TestRail, Git, and ELK to triage a comment | Webhook fires — context collected in under 5 s |
+| Copy-pastes test case IDs and log lines by hand | Draft pre-populated with clickable evidence links |
+| Reply quality varies by person and shift | Consistent tone and structure on every defect |
+| No audit trail of what evidence informed the reply | Every draft stored in SQLite + optional Jira custom field |
+| Only works when someone is at a desk | 24x7 first-pass coverage |
 
 ---
 
@@ -24,421 +24,310 @@ A FastAPI service that listens for Jira webhook events, classifies engineer comm
 
 | Feature | Detail |
 |---|---|
-| **8-bucket classification** | Cannot Reproduce · Need More Info · Fixed–Validate · By Design · Duplicate/Already Fixed · Blocked/Waiting · Configuration Issue · Other |
-| **Multi-source context** | TestRail cases, Git commits/PRs, Jenkins build logs, ELK log search, Confluence KB, S3 artifacts |
-| **Dual-strategy drafting** | GitHub Copilot SDK (GPT-4o) with keyword-heuristic fallback |
-| **RAG prior-defect search** | ChromaDB KB query + separate `source=jira` prior-defect query, deduplicated |
-| **Author-role inference** | QA · DevOps · Developer detected from display name / e-mail — tailors draft tone |
-| **Human-in-the-loop UI** | `/ui` review dashboard — approve, edit inline, or reject before any comment is posted |
-| **Teams AdaptiveCard** | Notification with direct Approve / Reject buttons and a Review link |
-| **Jira custom field audit** | Approved draft optionally written to `JIRA_DRAFT_FIELD_ID` before posting |
-| **HMAC-SHA256 webhook validation** | Configurable per-IP rate limiting (60 req/min default) |
-| **367 unit tests** | 100 % spec-compliant, 0 failures |
+| 8-bucket classification | Cannot Reproduce, Need More Info, Fixed-Validate, By Design, Duplicate, Blocked, Config Issue, Other |
+| Multi-source context | TestRail, Git PRs, Jenkins logs, ELK search, Confluence KB, S3 artifacts |
+| Dual-strategy drafting | GitHub Copilot SDK (GPT-4o) with keyword-heuristic fallback |
+| RAG prior-defect search | ChromaDB KB query + `source=jira` prior-defect query, deduplicated |
+| Author-role inference | QA, DevOps, Developer detected from display name / email |
+| Human-in-the-loop UI | `/ui` review dashboard — approve, edit inline, or reject |
+| Teams AdaptiveCard | Notification with Approve / Reject buttons and a Review link |
+| Jira audit field | Approved draft written to `JIRA_DRAFT_FIELD_ID` before posting |
+| Webhook security | HMAC-SHA256 signature validation + per-IP rate limiting |
+| Test coverage | 367 unit tests, 0 failures |
 
 ---
 
 ## Architecture
 
-\`\`\`
-+-----------------------------------------------------------------------------------+
-|  INTERNET / SAAS LAYER                                                            |
-|                                                                                   |
-|   Jira Cloud ──── comment webhook ────►  Webhook Relay (ngrok / HPE relay)       |
-|   GitHub / GitLab                                                                 |
-|   TestRail SaaS                                                                   |
-|   Microsoft Teams                                                                 |
-+-----------------------------------------|-----------------------------------------+
-                                          │  HTTPS / TLS
-+-----------------------------------------▼-----------------------------------------+
-|  DMZ / PERIMETER                                                                   |
-|                                                                                    |
-|   Reverse Proxy (nginx)  ──►  FastAPI   :8000                                     |
-|                                │                                                   |
-|                                ├── Event Filter (deduplicate, ignore bot comments) |
-|                                ├── Classifier  (Copilot SDK → keyword fallback)   |
-|                                ├── Context Collector                               |
-|                                │     ├── JiraConnector       (REST API)            |
-|                                │     ├── TestRailConnector   (REST API)            |
-|                                │     ├── GitConnector        (REST API)            |
-|                                │     ├── LogStoreConnector   (ELK / Jenkins)       |
-|                                │     ├── S3ArtifactFetcher   (S3 / MinIO)          |
-|                                │     └── Confluence/PDFConn  (RAG)                 |
-|                                ├── Drafter   (LLM → heuristic fallback)            |
-|                                ├── Review UI (/ui)                                 |
-|                                └── Notifier  (Teams AdaptiveCard / e-mail)        |
-+-----------------------------------------------------------------------------------+
-|  ON-PREM DATA LAYER                                                                |
-|                                                                                    |
-|   SQLite (.data/assistant.db)   ChromaDB (.data/chroma)   S3 / MinIO              |
-|   Redis (opt. rate-limit cache) RabbitMQ (opt. queue)                             |
-+-----------------------------------------------------------------------------------+
-\`\`\`
+```
+Internet / SaaS
+  Jira Cloud --> Webhook Relay (ngrok / HPE relay)
+  GitHub, TestRail, Microsoft Teams
+         |
+         | HTTPS / TLS
+         v
+  nginx --> FastAPI :8000
+              |-- Event Filter     (dedup, bot guard)
+              |-- Classifier       (Copilot SDK -> keyword fallback)
+              |-- Context Collector
+              |     |-- JiraConnector       (REST API)
+              |     |-- TestRailConnector   (REST API)
+              |     |-- GitConnector        (REST API)
+              |     |-- LogStoreConnector   (ELK / Jenkins)
+              |     |-- S3ArtifactFetcher   (S3 / MinIO)
+              |     `-- Confluence/PDFConn  (RAG)
+              |-- Drafter          (LLM -> heuristic fallback)
+              |-- Review UI        (/ui)
+              `-- Notifier         (Teams / email)
 
-Full topology detail → [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
+On-Prem Data
+  SQLite, ChromaDB, S3/MinIO, Redis (opt.), RabbitMQ (opt.)
+```
+
+Full topology: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
 
 ---
 
-## End-to-End Pipeline
+## Pipeline
 
-\`\`\`
-1. Jira comment webhook  ──►  Event Filter (bot/self check, dedup)
-        │
-        ▼
-2. Classifier            ──►  bucket + confidence (0–1)
-        │
-        ▼
-3. Context Collector     ──►  parallel fan-out
-        ├── TestRail  : matching test cases (semantic similarity)
-        ├── Git       : recent commits / open PRs for the component
-        ├── ELK       : error-log snippets for the last 24 h
-        ├── Jenkins   : build log for the triggering build
-        ├── S3        : test-result artifacts / screenshots
-        └── RAG       : KB articles + prior similar defects (ChromaDB)
-        │
-        ▼
-4. Author-role inference ──►  "QA" | "DevOps" | "Developer"
-        │
-        ▼
-5. Drafter               ──►  structured reply draft
-        │   ✅ Acknowledge  · 🔎 Evidence  · 🧪 Repro  · ❓ Missing  · ▶️ Next action
-        ▼
-6. Review UI / Teams card ──► engineer: Approve · Edit · Reject
-        │
-        ▼
-7. On Approve            ──►  write JIRA_DRAFT_FIELD_ID (audit) → post comment to Jira
-\`\`\`
+1. **Webhook** — Jira fires `comment_created`; Event Filter checks type, status, and deduplication
+2. **Classify** — bucket + confidence score (0-1) via Copilot SDK or keyword rules
+3. **Collect context** — parallel fan-out: TestRail, Git, ELK, Jenkins, S3, RAG
+4. **Infer author role** — QA / DevOps / Developer from display name / email
+5. **Draft** — template filled with evidence, optionally refined by LLM
+6. **Review** — engineer approves, edits, or rejects via `/ui` or Teams card
+7. **Post** — on approve: write audit field then post comment to Jira
+
+Draft structure: Acknowledge, Evidence, Repro steps, Missing info, Next action
 
 ---
 
 ## Classification Buckets
 
-| Bucket | `CommentType` | Typical trigger phrases |
+| Bucket | Type value | Example phrases |
 |---|---|---|
 | Cannot Reproduce | `cannot_reproduce` | "cannot repro", "works on my machine" |
 | Need More Info | `need_more_info` | "need logs", "provide stack trace" |
 | Fixed — Validate | `fixed_validate` | "fix merged", "please validate in build" |
 | By Design | `by_design` | "as designed", "expected behaviour" |
-| Duplicate / Already Fixed | `duplicate_fixed` | "duplicate of", "already fixed in" |
+| Duplicate / Fixed | `duplicate_fixed` | "duplicate of", "already fixed in" |
 | Blocked / Waiting | `blocked_waiting` | "blocked by", "waiting on upstream" |
 | Configuration Issue | `configuration_issue` | "config error", "misconfigured" |
 | Other (fallback) | `other` | anything below minimum keyword score |
-
-Primary strategy: **GitHub Copilot SDK** (structured JSON response).
-Fallback strategy: **keyword heuristics** (no external API needed).
 
 ---
 
 ## Quick Start
 
-\`\`\`bash
-# 1. Clone and create virtualenv
+```bash
+# 1. Clone and set up virtualenv
 git clone <repo-url> && cd AI-assistant-for-Jira-comment-replies
 python -m venv .venv && source .venv/bin/activate
 
-# 2. Install dependencies
+# 2. Install
 pip install -e ".[dev]"
 
 # 3. Configure
 cp .env.example .env
-# edit .env — minimum required: JIRA_BASE_URL, JIRA_USERNAME, JIRA_API_TOKEN
+# Minimum required: JIRA_BASE_URL, JIRA_USERNAME, JIRA_API_TOKEN
 
-# 4. Ingest your knowledge base (optional but recommended)
-curl -X POST http://localhost:8000/rag/ingest/confluence
-curl -X POST http://localhost:8000/rag/ingest/pdf        # after uploading PDFs
-
-# 5. Start the server
+# 4. Start
 uvicorn src.api.app:app --host 0.0.0.0 --port 8000 --reload
 
-# 6. Open the review UI
+# 5. Open the review UI
 open http://localhost:8000/ui
-\`\`\`
+```
 
-### Docker (production)
+**Docker (production)**
 
-\`\`\`bash
+```bash
 docker-compose up -d
-# server starts on :8000, data persisted in ./data/
-\`\`\`
+```
 
-### Expose webhook to Jira Cloud
+**Expose webhook to Jira Cloud**
 
-\`\`\`bash
-# ngrok (dev)
+```bash
 ngrok http 8000
-# configure Jira webhook URL → https://<id>.ngrok.io/webhook/jira
-
-# HPE relay (prod) — set APP_BASE_URL to the relay endpoint
-\`\`\`
+# Set Jira webhook URL to https://<id>.ngrok.io/webhook/jira
+```
 
 ---
 
 ## API Endpoints
 
-| Endpoint | Method | Description |
+| Method | Endpoint | Description |
 |---|---|---|
-| `/webhook/jira` | `POST` | Receive Jira comment events |
-| `/ui` | `GET` | Draft review dashboard |
-| `/approve` | `POST` | Approve a draft — posts comment to Jira |
-| `/reject` | `POST` | Reject a draft — marks it dismissed |
-| `/drafts` | `GET` | List all pending drafts (JSON) |
-| `/drafts/{id}` | `GET` | Get a single draft |
-| `/rag/ingest/confluence` | `POST` | Ingest Confluence spaces into ChromaDB |
-| `/rag/ingest/pdf` | `POST` | Ingest an uploaded PDF into ChromaDB |
-| `/rag/ingest/jira` | `POST` | Ingest resolved Jira tickets as prior-defect context |
-| `/rag/query` | `POST` | Ad-hoc RAG query |
-| `/health` | `GET` | Liveness check |
+| POST | `/webhook/jira` | Receive Jira comment events |
+| GET | `/ui` | Draft review dashboard |
+| POST | `/ui/drafts/{id}/approve` | Approve and post to Jira |
+| POST | `/ui/drafts/{id}/reject` | Reject with optional feedback |
+| GET | `/drafts` | List all drafts (JSON) |
+| GET | `/drafts/{id}` | Get a single draft |
+| POST | `/rag/ingest/confluence` | Ingest Confluence spaces |
+| POST | `/rag/ingest/pdf` | Ingest a PDF file |
+| POST | `/rag/ingest/jira` | Ingest resolved tickets as prior-defect context |
+| GET | `/rag/search` | Ad-hoc semantic search |
+| GET | `/health` | Liveness check |
 
 ---
 
 ## Confidence Levels
 
-Every draft includes a `confidence` score (0–1) derived from classifier certainty and evidence coverage.
-
-### Classifier Confidence
-
 | Level | Score | Meaning |
 |---|---|---|
-| 🟢 **HIGH** | > 0.80 | Strong keyword or Copilot SDK match — bucket is clear |
-| 🟡 **MEDIUM** | 0.50 – 0.80 | Some signal but ambiguous phrasing — reviewer should confirm bucket |
-| 🔴 **LOW** | < 0.50 | Falls through to `other` — manual classification recommended |
+| HIGH | > 0.80 | Strong match — bucket is clear |
+| MEDIUM | 0.50 - 0.80 | Some signal but ambiguous — reviewer should confirm |
+| LOW | < 0.50 | Weak match — falls to `other`, manual review recommended |
 
-### Draft Acceptance Rate
-
-The system logs `approved` / `rejected` outcomes per `CommentType` in SQLite.
-A low acceptance rate on a specific bucket indicates the drafting heuristics need tuning.
+Draft acceptance rates per bucket are logged in SQLite (`GET /metrics`).
 
 ---
 
 ## Review UI
 
-Navigate to `http://localhost:8000/ui` after starting the server.
+Open `http://localhost:8000/ui` after starting the server.
 
-- **Pending** tab: all unreviewed drafts
-- Each card shows: Jira ticket key, comment author + role, bucket badge, confidence bar, evidence summary, and the full draft text
-- Inline edit — modify the draft before approving
-- **Approve** → writes draft to Jira custom field (if `JIRA_DRAFT_FIELD_ID` set) then posts as a Jira comment
-- **Reject** → dismisses the draft, logs the decision
+Each draft card shows the Jira ticket key, author + inferred role, classification badge, confidence score, evidence summary, and the full draft text. The draft is editable inline before approving.
 
-### Teams AdaptiveCard
+- **Approve** — writes to `JIRA_DRAFT_FIELD_ID` (if set) then posts as a Jira comment
+- **Reject** — dismisses the draft and stores feedback
 
-When `TEAMS_WEBHOOK_URL` is configured, a card is posted for every new draft:
-
-\`\`\`
-[PCBE-1234] Cannot Reproduce — confidence 0.87
-─────────────────────────────────────────
-Evidence: 3 TestRail cases · 2 Git commits · 12 ELK hits
-─────────────────────────────────────────
-[ 👁 Review ]   [ ✅ Approve ]   [ ❌ Reject ]
-\`\`\`
+When `TEAMS_WEBHOOK_URL` is configured, a card is posted to Teams for every new draft with Review, Approve, and Reject action buttons.
 
 ---
 
 ## RAG Knowledge Base
 
-\`\`\`bash
-# Ingest Confluence spaces (set CONFLUENCE_SPACES=TEAM,KB in .env)
+```bash
+# Ingest Confluence (set CONFLUENCE_SPACES=TEAM,KB in .env)
 curl -X POST http://localhost:8000/rag/ingest/confluence
 
 # Ingest a PDF runbook
-curl -X POST http://localhost:8000/rag/ingest/pdf \
-     -F "file=@runbook.pdf"
+curl -X POST http://localhost:8000/rag/ingest/pdf -F "file=@runbook.pdf"
 
 # Ingest resolved Jira tickets as prior-defect context
 curl -X POST http://localhost:8000/rag/ingest/jira
 
 # Ad-hoc query
 curl -X POST http://localhost:8000/rag/query \
-     -H "Content-Type: application/json" \
-     -d '{"query": "login timeout after firmware upgrade", "top_k": 5}'
-\`\`\`
+  -H "Content-Type: application/json" \
+  -d '{"query": "login timeout after firmware upgrade", "top_k": 5}'
+```
 
-At query time, the Context Collector runs **two parallel** ChromaDB queries:
-1. **KB query** — general knowledge base (Confluence + PDFs)
-2. **Prior-defect query** — `where={"source": "jira"}` filtered to resolved tickets with similar symptoms
+At query time, two ChromaDB queries run in parallel:
 
-Results are deduplicated by `chunk_id` and the top-k merged snippets are injected into the draft prompt.
+1. **KB query** — Confluence pages + PDFs
+2. **Prior-defect query** — resolved Jira tickets (`source=jira` filter)
+
+Results are deduplicated by `chunk_id` before injection into the draft prompt.
 
 ---
 
 ## Configuration
 
-### Environment Variables
+Copy `.env.example` to `.env`.
 
-Copy `.env.example` to `.env` and fill in the values you need.
-
-#### Core
+### Core
 
 | Variable | Default | Description |
 |---|---|---|
-| `APP_HOST` | `0.0.0.0` | Bind address |
 | `APP_PORT` | `8000` | Listen port |
-| `APP_BASE_URL` | `http://localhost:8000` | Public URL (used in Teams card links) |
+| `APP_BASE_URL` | `http://localhost:8000` | Public URL for Teams card links |
 | `LOG_LEVEL` | `INFO` | `DEBUG` / `INFO` / `WARNING` |
-| `MAX_COMMENTS` | `10` | Max comment history fetched per ticket |
-| `ASSISTANT_DB_PATH` | `.data/assistant.db` | SQLite database path |
+| `ASSISTANT_DB_PATH` | `.data/assistant.db` | SQLite path |
 
-#### Jira
+### Jira
 
 | Variable | Description |
 |---|---|
 | `JIRA_BASE_URL` | `https://your-org.atlassian.net` |
-| `JIRA_USERNAME` | Service-account e-mail |
+| `JIRA_USERNAME` | Service-account email |
 | `JIRA_API_TOKEN` | Jira API token |
-| `JIRA_WEBHOOK_SECRET` | HMAC secret for signature validation |
-| `VALIDATE_WEBHOOK_SIGNATURE` | `true` in production (default `false`) |
-| `JIRA_DRAFT_FIELD_ID` | Optional — custom field ID (e.g. `customfield_10200`) to store draft for auditability |
+| `JIRA_WEBHOOK_SECRET` | HMAC secret — set `VALIDATE_WEBHOOK_SIGNATURE=true` in prod |
+| `JIRA_DRAFT_FIELD_ID` | Optional custom field (e.g. `customfield_10200`) for audit storage |
 
-#### LLM / Copilot
+### LLM / Copilot
 
 | Variable | Default | Description |
 |---|---|---|
-| `LLM_BACKEND` | `copilot` | `copilot` \| `local` \| `none` |
+| `LLM_BACKEND` | `copilot` | `copilot` / `local` / `none` |
 | `COPILOT_API_KEY` | — | GitHub Copilot API key |
 | `COPILOT_MODEL` | `gpt-4o` | Model name |
-| `COPILOT_TEMPERATURE` | `0.1` | Generation temperature |
 | `LLM_MODEL_PATH` | — | Path to `.gguf` file (local backend only) |
 
-#### RAG / ChromaDB
+### RAG
 
 | Variable | Default | Description |
 |---|---|---|
 | `CHROMA_PERSIST_DIR` | `.data/chroma` | ChromaDB storage path |
 | `RAG_EMBEDDING_MODEL` | `all-MiniLM-L6-v2` | Sentence-transformer model |
 | `RAG_TOP_K` | `5` | Snippets retrieved per query |
-| `RAG_CHUNK_SIZE` | `500` | Token chunk size |
 
-#### Integrations
-
-| Variable | Description |
-|---|---|
-| `TESTRAIL_BASE_URL` | TestRail instance URL |
-| `TESTRAIL_USERNAME` | TestRail username |
-| `TESTRAIL_API_KEY` | TestRail API key |
-| `TESTRAIL_PROJECT_ID` | Project to search |
-| `GIT_PROVIDER` | `github` \| `gitlab` \| `bitbucket` |
-| `GIT_BASE_URL` | Override for self-hosted Git |
-| `GIT_TOKEN` | Personal access token |
-| `ELK_HOST` | Elasticsearch / OpenSearch host |
-| `ELK_USERNAME` / `ELK_PASSWORD` | Basic auth (or use `ELK_API_KEY`) |
-| `ELK_INDEX_PATTERN` | Index alias (default `logs-*`) |
-| `JENKINS_BASE_URL` | Jenkins instance URL |
-| `JENKINS_API_TOKEN` | Jenkins API token |
-| `CONFLUENCE_BASE_URL` | Confluence instance URL |
-| `CONFLUENCE_SPACES` | Comma-separated space keys to ingest |
-| `S3_BUCKET` | S3 / MinIO artifact bucket |
-| `S3_ENDPOINT_URL` | Leave blank for AWS default |
-
-#### Notifications
+### Integrations
 
 | Variable | Description |
 |---|---|
-| `TEAMS_WEBHOOK_URL` | Incoming Webhook URL for AdaptiveCard delivery |
-| `SMTP_HOST` / `SMTP_PORT` | SMTP relay for e-mail notifications |
-| `EMAIL_FROM` / `EMAIL_TO` | Sender and recipient addresses |
+| `TESTRAIL_BASE_URL` / `TESTRAIL_API_KEY` | TestRail instance and API key |
+| `GIT_PROVIDER` / `GIT_TOKEN` | `github` / `gitlab` / `bitbucket` + PAT |
+| `ELK_HOST` / `ELK_API_KEY` | Elasticsearch / OpenSearch |
+| `JENKINS_BASE_URL` / `JENKINS_API_TOKEN` | Jenkins instance |
+| `CONFLUENCE_BASE_URL` / `CONFLUENCE_SPACES` | Confluence + space keys to ingest |
+| `S3_BUCKET` / `S3_ENDPOINT_URL` | S3 or MinIO bucket |
+| `TEAMS_WEBHOOK_URL` | Teams incoming webhook for AdaptiveCard notifications |
 
-#### Infrastructure (optional)
+### Infrastructure (optional)
 
 | Variable | Default | Description |
 |---|---|---|
-| `RATE_LIMIT_ENABLED` | `true` | Per-IP rate limiting on `/webhook/jira` |
-| `RATE_LIMIT_RPM` | `60` | Max requests per minute per IP |
-| `REDIS_ENABLED` | `false` | Use Redis for distributed rate-limit state |
-| `REDIS_URL` | — | Full Redis URL (overrides host/port) |
-| `QUEUE_ENABLED` | `false` | Route webhook events through RabbitMQ |
-| `RABBITMQ_URL` | `amqp://guest:guest@localhost/` | AMQP connection URL |
+| `RATE_LIMIT_RPM` | `60` | Max webhook requests per minute per IP |
+| `REDIS_ENABLED` | `false` | Distributed rate-limit state |
+| `QUEUE_ENABLED` | `false` | Async processing via RabbitMQ |
+| `RABBITMQ_URL` | `amqp://guest:guest@localhost/` | AMQP URL |
 
 ---
 
 ## Running Tests
 
-\`\`\`bash
-# All unit tests
+```bash
 pytest tests/unit/ -v
 
-# With coverage
-pytest tests/unit/ --cov=src --cov-report=html
-open htmlcov/index.html
+# With coverage report
+pytest tests/unit/ --cov=src --cov-report=html && open htmlcov/index.html
 
-# Integration tests (requires live Jira + TestRail)
+# Integration tests (requires live Jira + TestRail credentials)
 pytest tests/integration/ -v
-\`\`\`
+```
 
-367 tests · 0 failures.
+367 tests, 0 failures.
 
 ---
 
 ## Project Structure
 
-\`\`\`
+```
 src/
-├── api/
-│   ├── app.py            # FastAPI routes: /webhook, /ui, /approve, /reject, /rag/*
-│   └── event_filter.py   # Dedup + bot-comment guard
-├── agent/
-│   ├── classifier.py     # 8-bucket classifier (Copilot SDK + keyword fallback)
-│   ├── context_collector.py  # Fan-out to all integrations + RAG
-│   └── drafter.py        # Draft generation (LLM + heuristic fallback)
-├── integrations/
-│   ├── jira.py           # Jira REST client
-│   ├── testrail.py       # TestRail REST client
-│   ├── git.py            # GitHub / GitLab / Bitbucket client
-│   ├── log_lookup.py     # Jenkins + local log reader
-│   ├── confluence.py     # Confluence REST client
-│   ├── notifications.py  # Teams AdaptiveCard + SMTP
-│   └── ...
-├── rag/
-│   ├── engine.py         # ChromaDB query (KB + prior-defect dual-query)
-│   └── ingest.py         # Confluence / PDF / Jira ingestion
-├── models/               # Pydantic models: Comment, Classification, Context, Draft
-├── storage/
-│   └── sqlite_store.py   # Draft persistence + outcome logging
-└── config.py             # All settings via env vars (frozen dataclasses)
-\`\`\`
+|-- api/
+|   |-- app.py                # FastAPI routes
+|   `-- event_filter.py       # Dedup + bot guard
+|-- agent/
+|   |-- classifier.py         # 8-bucket classifier
+|   |-- context_collector.py  # Fan-out to all integrations + RAG
+|   `-- drafter.py            # Draft generation
+|-- integrations/
+|   |-- jira.py  testrail.py  git.py
+|   |-- log_lookup.py  confluence.py
+|   `-- notifications.py  s3_connector.py
+|-- rag/
+|   |-- engine.py             # ChromaDB dual-query
+|   `-- ingest.py             # Confluence / PDF / Jira ingestion
+|-- models/                   # Pydantic models
+|-- storage/sqlite_store.py   # Draft persistence + metrics
+`-- config.py                 # All settings (env vars)
+```
 
 ---
 
 ## Troubleshooting
 
-### Webhook returns 400 — signature mismatch
+**Webhook returns 400 (signature mismatch)**
+Set `VALIDATE_WEBHOOK_SIGNATURE=false` for local dev, or ensure `JIRA_WEBHOOK_SECRET` matches the Jira webhook config.
 
-\`\`\`
-VALIDATE_WEBHOOK_SIGNATURE=false   # disable for local dev
-\`\`\`
+**ChromaDB collection empty after ingest**
+Check `CHROMA_PERSIST_DIR` is writable and `CONFLUENCE_SPACES` has at least one valid space key, then re-run `POST /rag/ingest/confluence`.
 
-For production, make sure `JIRA_WEBHOOK_SECRET` matches the secret set in the
-Jira webhook configuration screen.
+**Drafts have confidence 0.0**
+`LLM_BACKEND` is `none` or `COPILOT_API_KEY` is missing — the keyword fallback does not produce a confidence score. Set `LLM_BACKEND=copilot` and add the API key.
 
-### ChromaDB collection not found after ingest
-
-\`\`\`bash
-# Re-ingest
-curl -X POST http://localhost:8000/rag/ingest/confluence
-\`\`\`
-
-Check `CHROMA_PERSIST_DIR` is writable and that `CONFLUENCE_SPACES` contains at least one valid space key.
-
-### Draft posted empty / confidence 0.0
-
-`LLM_BACKEND=none` or Copilot API key missing → keyword fallback fires.
-Confidence is intentionally 0.0 when using the heuristic fallback.
-Set `LLM_BACKEND=copilot` and provide `COPILOT_API_KEY` for scored drafts.
-
-### Teams card not appearing
-
-Verify `TEAMS_WEBHOOK_URL` is the **Incoming Webhook** URL (not a bot URL) and
-that the Teams channel has the Incoming Webhook connector enabled.
+**Teams card not appearing**
+Confirm `TEAMS_WEBHOOK_URL` is an Incoming Webhook URL and the connector is enabled on the Teams channel.
 
 ---
 
-## Documentation
+## Docs
 
-| Document | Description |
-|---|---|
-| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | Deployment topology, pipeline detail, component contracts, security |
-| [docs/SETUP.md](docs/SETUP.md) | Step-by-step environment setup and integration configuration |
+- [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) — deployment topology, pipeline detail, security
+- [docs/SETUP.md](docs/SETUP.md) — step-by-step environment and integration setup
 
 ---
 
-## License
-
-Internal HPE use. Not for external distribution.
+*Internal HPE use. Not for external distribution.*
