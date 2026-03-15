@@ -103,6 +103,96 @@ class DocumentIngester:
             metadata=metadata,
         )
 
+    def ingest_jira_resolved(
+        self,
+        jira_client,
+        project_keys: Optional[list[str]] = None,
+        max_issues: int = 100,
+        statuses: Optional[list[str]] = None,
+    ) -> int:
+        """Ingest resolved Jira tickets as prior-defect context for RAG.
+
+        Fetches resolved Bug/Defect tickets from the specified Jira projects,
+        extracts summary + description + resolution information, and indexes
+        them with ``source_type="jira"`` so they are available for prior-defect
+        queries in :meth:`src.agent.context_collector.ContextCollector._query_rag`.
+
+        Parameters
+        ----------
+        jira_client : JiraClient
+            Authenticated Jira client used to search and fetch issues.
+        project_keys : list[str] | None
+            Jira project keys to search (e.g. ``["PROJ", "INFRA"]``).
+            If *None* or empty, searches all projects.
+        max_issues : int
+            Maximum number of resolved tickets to ingest (default 100).
+        statuses : list[str] | None
+            Resolution statuses to include.  Defaults to
+            ``["Done", "Resolved", "Closed"]``.
+
+        Returns
+        -------
+        int
+            Total number of chunks indexed across all ingested issues.
+        """
+        resolved_statuses = statuses or ["Done", "Resolved", "Closed"]
+        status_jql = " OR ".join(f'status = "{s}"' for s in resolved_statuses)
+
+        jql_parts = ["issuetype in (Bug, Defect)", f"({status_jql})"]
+        if project_keys:
+            project_jql = " OR ".join(f'project = "{k}"' for k in project_keys)
+            jql_parts.append(f"({project_jql})")
+        jql = " AND ".join(jql_parts) + " ORDER BY updated DESC"
+
+        issues = jira_client.search_issues(jql=jql, max_results=max_issues)
+
+        total_chunks = 0
+        for issue in issues:
+            fields = issue.get("fields", {})
+            issue_key = issue.get("key", "")
+            summary = fields.get("summary", "") or ""
+            description = fields.get("description", "") or ""
+            resolution = (fields.get("resolution") or {}).get("name", "")
+
+            # Last comment often contains the resolution details
+            comments = fields.get("comment", {}).get("comments", [])
+            last_comment_body = comments[-1].get("body", "") if comments else ""
+
+            text_parts = [f"Issue: {issue_key}", f"Summary: {summary}"]
+            if description:
+                text_parts.append(f"Description: {description[:1000]}")
+            if resolution:
+                text_parts.append(f"Resolution: {resolution}")
+            if last_comment_body:
+                text_parts.append(f"Resolution note: {last_comment_body[:500]}")
+
+            text = "\n\n".join(text_parts)
+            jira_url: Optional[str] = None
+            try:
+                jira_url = f"{settings.jira.base_url.rstrip('/')}/browse/{issue_key}"
+            except Exception:
+                pass
+
+            count = self.ingest_text(
+                text=text,
+                source_title=f"{issue_key}: {summary[:80]}",
+                source_type="jira",
+                source_url=jira_url,
+                metadata={
+                    "issue_key": issue_key,
+                    "status": resolution or "resolved",
+                    "source": "jira",
+                },
+            )
+            total_chunks += count
+
+        logger.info(
+            "Ingested %d chunks from %d resolved Jira issues",
+            total_chunks,
+            len(issues),
+        )
+        return total_chunks
+
     def ingest_text(
         self,
         text: str,

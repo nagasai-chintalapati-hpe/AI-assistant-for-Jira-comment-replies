@@ -25,6 +25,7 @@ CREATE TABLE IF NOT EXISTS drafts (
     created_at      TEXT NOT NULL,
     created_by      TEXT NOT NULL,
     body            TEXT NOT NULL,
+    original_body   TEXT,           -- AI-generated body before human edits
     classification  TEXT,
     confidence      REAL NOT NULL DEFAULT 0.0,
     status          TEXT NOT NULL DEFAULT 'generated',
@@ -75,6 +76,7 @@ class SQLiteDraftStore:
         """Add new columns to existing databases (idempotent migrations)."""
         migrations = [
             "ALTER TABLE drafts ADD COLUMN rating INTEGER",
+            "ALTER TABLE drafts ADD COLUMN original_body TEXT",
         ]
         for sql in migrations:
             try:
@@ -90,9 +92,9 @@ class SQLiteDraftStore:
         self._conn.execute(
             """INSERT OR REPLACE INTO drafts
                (draft_id, issue_key, comment_id, created_at, created_by,
-                body, classification, confidence, status,
+                body, original_body, classification, confidence, status,
                 approved_by, approved_at, posted_at, feedback, rating, data_json)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 draft.draft_id,
                 draft.issue_key,
@@ -100,6 +102,7 @@ class SQLiteDraftStore:
                 draft.created_at.isoformat(),
                 draft.created_by,
                 draft.body,
+                draft.original_body or draft.body,  # preserve original AI text
                 classification,
                 draft.confidence_score,
                 draft.status.value,
@@ -233,7 +236,11 @@ class SQLiteDraftStore:
         return True
 
     def update_body(self, draft_id: str, body: str) -> bool:
-        """Update the draft body (human-edited text).  Returns True if found."""
+        """Update the draft body (human-edited text).  Returns True if found.
+
+        ``original_body`` is intentionally left unchanged so the AI-generated
+        text is always preserved for RLHF analysis and edit-delta metrics.
+        """
         result = self._conn.execute(
             "UPDATE drafts SET body = ? WHERE draft_id = ?",
             (body, draft_id),
@@ -246,6 +253,9 @@ class SQLiteDraftStore:
         ).fetchone()
         if row:
             data = json.loads(row["data_json"])
+            # Preserve original_body — only update the final body
+            if "original_body" not in data or data["original_body"] is None:
+                data["original_body"] = data.get("body")  # late-set for older rows
             data["body"] = body
             self._conn.execute(
                 "UPDATE drafts SET data_json = ? WHERE draft_id = ?",
@@ -253,8 +263,41 @@ class SQLiteDraftStore:
             )
 
         self._conn.commit()
-        logger.debug("Updated body for draft %s", draft_id)
+        logger.debug("Updated body for draft %s (original preserved)", draft_id)
         return True
+
+    def purge_stale(self, days: int = 30) -> int:
+        """Delete unactioned (still GENERATED) drafts older than *days* days.
+
+        This prevents unbounded growth of the draft store for installations
+        that receive high comment volume but do not always action every draft.
+
+        Parameters
+        ----------
+        days : int
+            Age threshold in calendar days.  Drafts with ``status = generated``
+            and ``created_at`` older than this many days will be deleted.
+            Defaults to 30.
+
+        Returns
+        -------
+        int
+            Number of rows deleted.
+        """
+        from datetime import timedelta
+
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+        result = self._conn.execute(
+            "DELETE FROM drafts WHERE status = 'generated' AND created_at < ?",
+            (cutoff,),
+        )
+        self._conn.commit()
+        deleted = result.rowcount
+        if deleted:
+            logger.info(
+                "Purged %d stale GENERATED draft(s) older than %d days", deleted, days
+            )
+        return deleted
 
     def delete(self, draft_id: str) -> bool:
         """Delete a draft.  Returns True if it existed."""
@@ -361,6 +404,32 @@ class SQLiteDraftStore:
         ).fetchone()
         hallucination_flagged = hall_row["cnt"] if hall_row else 0
 
+        # Drafts where a human edited the body before approving
+        edited_row = self._conn.execute(
+            "SELECT COUNT(*) as cnt FROM drafts "
+            "WHERE original_body IS NOT NULL AND body != original_body"
+        ).fetchone()
+        edited_count = edited_row["cnt"] if edited_row else 0
+        pct_edited = round(edited_count / approved * 100, 1) if approved > 0 else 0.0
+
+        # Pipeline latency
+        latency_row = self._conn.execute(
+            "SELECT AVG(json_extract(data_json, '$.pipeline_duration_ms')) as avg_ms "
+            "FROM drafts"
+        ).fetchone()
+        avg_pipeline_ms = (
+            round(latency_row["avg_ms"], 1)
+            if latency_row and latency_row["avg_ms"] is not None
+            else None
+        )
+
+        # Redaction stats
+        redaction_row = self._conn.execute(
+            "SELECT SUM(json_extract(data_json, '$.redaction_count')) as total "
+            "FROM drafts"
+        ).fetchone()
+        total_redactions = int(redaction_row["total"] or 0) if redaction_row else 0
+
         return {
             "total_drafts": total,
             "approved": approved,
@@ -370,6 +439,10 @@ class SQLiteDraftStore:
             "avg_confidence": avg_confidence,
             "avg_rating": avg_rating,
             "hallucination_flagged": hallucination_flagged,
+            "drafts_edited_before_approval": edited_count,
+            "pct_approved_drafts_edited": pct_edited,
+            "avg_pipeline_duration_ms": avg_pipeline_ms,
+            "total_redactions": total_redactions,
             "by_classification": by_classification,
         }
 

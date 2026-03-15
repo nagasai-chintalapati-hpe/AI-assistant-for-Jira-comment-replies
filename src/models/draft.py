@@ -25,6 +25,7 @@ class Draft(BaseModel):
     
     # Draft content
     body: str
+    original_body: Optional[str] = None     # AI-generated body before any human edits
     suggested_actions: Optional[list[dict[str, str]]] = None  # {action, value}
     suggested_labels: Optional[list[str]] = None
     confidence_score: float  # 0.0 to 1.0
@@ -43,10 +44,13 @@ class Draft(BaseModel):
     approved_by: Optional[str] = None
     approved_at: Optional[datetime] = None
     posted_at: Optional[datetime] = None
+    feedback: Optional[str] = None          # rejection reason / reviewer notes
 
     # Quality tracking
     rating: Optional[int] = None        # 1–5 stars; set by human reviewer
     hallucination_flag: bool = False     # True if draft has specific claims but no evidence
+    redaction_count: int = 0             # PII/secret patterns scrubbed before LLM send
+    pipeline_duration_ms: float = 0.0   # total wall-clock ms from webhook receipt to draft stored
 
     model_config = ConfigDict(
         json_schema_extra={

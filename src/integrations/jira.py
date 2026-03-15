@@ -245,3 +245,47 @@ class JiraClient:
         except Exception as e:
             logger.error("Error transitioning %s: %s", issue_key, e)
             return False
+
+    def search_issues(
+        self,
+        jql: str,
+        max_results: int = 100,
+        fields: Optional[list[str]] = None,
+    ) -> list[dict[str, Any]]:
+        """Execute a JQL query and return matching issues.
+
+        Parameters
+        ----------
+        jql : str
+            JQL query string.
+        max_results : int
+            Maximum number of issues to return (capped at 100 per Jira page).
+        fields : list[str] | None
+            Specific field names to fetch.  Defaults to a useful subset for
+            RAG ingestion (summary, description, status, resolution, comment,
+            issuetype, priority).
+
+        Returns
+        -------
+        list[dict]
+            Raw Jira issue dictionaries from the search response.
+        """
+        _fields = fields or [
+            "summary",
+            "description",
+            "status",
+            "resolution",
+            "comment",
+            "issuetype",
+            "priority",
+        ]
+        try:
+            result = self.client.jql(jql, limit=max_results, fields=_fields)
+            issues: list[dict[str, Any]] = result.get("issues", [])
+            logger.info(
+                "JQL search returned %d issues (query=%s…)", len(issues), jql[:80]
+            )
+            return issues
+        except Exception as e:
+            logger.error("Error executing JQL '%s…': %s", jql[:80], e)
+            raise

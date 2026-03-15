@@ -135,8 +135,23 @@ class ResponseDrafter:
         comment: Comment,
         classification: CommentClassification,
         context: ContextCollectionResult,
+        redaction_count: int = 0,
+        pipeline_start_ms: Optional[float] = None,
     ) -> Draft:
-        """Generate a draft response to a comment."""
+        """Generate a draft response to a comment.
+
+        Parameters
+        ----------
+        comment : Comment
+        classification : CommentClassification
+        context : ContextCollectionResult
+        redaction_count : int
+            Number of PII/secret patterns that were redacted before the LLM
+            received the comment body.  Stored in the draft audit record.
+        pipeline_start_ms : float | None
+            ``time.monotonic()`` value captured at the start of the orchestrator
+            so the total pipeline wall-clock time can be recorded.
+        """
         # 1. Template-fill
         template_body = self._fill_template(comment, classification, context)
         # 2. Optional Copilot SDK refinement
@@ -152,6 +167,12 @@ class ResponseDrafter:
         # 5. Hallucination check — flag drafts with specific claims but no evidence
         hallucination_flag = self._detect_hallucination(draft_body, citations)
         # 6. Assemble Draft
+        import time as _time_mod
+        pipeline_ms = (
+            (_time_mod.monotonic() - pipeline_start_ms) * 1000
+            if pipeline_start_ms is not None
+            else 0.0
+        )
         return Draft(
             draft_id=f"draft_{int(datetime.now(timezone.utc).timestamp())}",
             issue_key=comment.issue_key,
@@ -159,6 +180,7 @@ class ResponseDrafter:
             created_at=datetime.now(timezone.utc),
             created_by="system",
             body=draft_body,
+            original_body=draft_body,   # preserved even after human edits
             status=DraftStatus.GENERATED,
             suggested_actions=self._suggest_actions(classification),
             suggested_labels=self._suggest_labels(classification),
@@ -168,6 +190,8 @@ class ResponseDrafter:
             classification_type=classification.comment_type.value,
             classification_reasoning=classification.reasoning,
             hallucination_flag=hallucination_flag,
+            redaction_count=redaction_count,
+            pipeline_duration_ms=round(pipeline_ms, 1),
         )
 
     # Copilot SDK refinement
