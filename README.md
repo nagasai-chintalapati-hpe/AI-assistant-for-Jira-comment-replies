@@ -141,13 +141,24 @@ ngrok http 8000
 | GET | `/ui` | Draft review dashboard |
 | POST | `/ui/drafts/{id}/approve` | Approve and post to Jira |
 | POST | `/ui/drafts/{id}/reject` | Reject with optional feedback |
+| POST | `/ui/drafts/{id}/rate` | Rate a draft 1–5 stars |
 | GET | `/drafts` | List all drafts (JSON) |
 | GET | `/drafts/{id}` | Get a single draft |
+| POST | `/approve` | Approve draft (JSON API) |
+| POST | `/reject` | Reject draft (JSON API) |
 | POST | `/rag/ingest/confluence` | Ingest Confluence spaces |
 | POST | `/rag/ingest/pdf` | Ingest a PDF file |
+| POST | `/rag/ingest/text` | Ingest raw text |
 | POST | `/rag/ingest/jira` | Ingest resolved tickets as prior-defect context |
-| GET | `/rag/search` | Ad-hoc semantic search |
-| GET | `/health` | Liveness check |
+| GET | `/rag/search` | Ad-hoc semantic search (query params) |
+| POST | `/rag/query` | Ad-hoc semantic search (JSON body) |
+| GET | `/rag/stats` | RAG collection statistics |
+| DELETE | `/rag/document/{title}` | Remove a source document from index |
+| GET | `/health` | Liveness check (in-process state) |
+| GET | `/health/deep` | Deep readiness check (live connectivity to all integrations) |
+| GET | `/metrics` | Aggregated draft quality metrics (JSON) |
+| GET | `/metrics/prometheus` | Prometheus-format metrics (requires `prometheus-client`) |
+| POST | `/admin/drafts/purge-stale` | Delete unactioned drafts older than N days |
 
 ---
 
@@ -186,12 +197,17 @@ curl -X POST http://localhost:8000/rag/ingest/confluence
 curl -X POST http://localhost:8000/rag/ingest/pdf -F "file=@runbook.pdf"
 
 # Ingest resolved Jira tickets as prior-defect context
-curl -X POST http://localhost:8000/rag/ingest/jira
+curl -X POST http://localhost:8000/rag/ingest/jira \
+  -H "Content-Type: application/json" \
+  -d '{"project_keys": ["PROJ", "INFRA"], "max_issues": 100}'
 
-# Ad-hoc query
+# Ad-hoc query (GET)
+curl "http://localhost:8000/rag/search?q=login+timeout+after+firmware+upgrade&top_k=5"
+
+# Ad-hoc query (POST — richer options)
 curl -X POST http://localhost:8000/rag/query \
   -H "Content-Type: application/json" \
-  -d '{"query": "login timeout after firmware upgrade", "top_k": 5}'
+  -d '{"query": "login timeout after firmware upgrade", "top_k": 5, "source_type": "confluence"}'
 ```
 
 At query time, two ChromaDB queries run in parallel:
@@ -255,6 +271,25 @@ Copy `.env.example` to `.env`.
 | `S3_BUCKET` / `S3_ENDPOINT_URL` | S3 or MinIO bucket |
 | `TEAMS_WEBHOOK_URL` | Teams incoming webhook for AdaptiveCard notifications |
 
+### Infrastructure (optional)
+
+| Variable | Default | Description |
+|---|---|---|
+| `RATE_LIMIT_RPM` | `60` | Max webhook requests per minute per IP |
+| `REDIS_ENABLED` | `false` | Distributed rate-limit state |
+| `QUEUE_ENABLED` | `false` | Async processing via RabbitMQ |
+| `RABBITMQ_URL` | `amqp://guest:guest@localhost/` | AMQP URL |
+
+**Optional extras** — install only what you need:
+
+```bash
+pip install -e ".[redis]"        # Redis rate-limiter
+pip install -e ".[queue]"        # RabbitMQ async queue
+pip install -e ".[s3]"           # S3 / MinIO artifact fetcher
+pip install -e ".[observability]" # Prometheus metrics endpoint
+pip install -e ".[prod]"         # All of the above
+```
+
 ---
 
 ## Running Tests
@@ -276,21 +311,21 @@ pytest tests/integration/ -v
 ```
 src/
 |-- api/
-|   |-- app.py                # FastAPI routes
+|   |-- app.py                # FastAPI routes (webhook, UI, RAG, admin, metrics)
 |   `-- event_filter.py       # Dedup + bot guard
 |-- agent/
 |   |-- classifier.py         # 8-bucket classifier
 |   |-- context_collector.py  # Fan-out to all integrations + RAG
-|   `-- drafter.py            # Draft generation
+|   `-- drafter.py            # Draft generation (original_body preserved)
 |-- integrations/
 |   |-- jira.py  testrail.py  git.py
 |   |-- log_lookup.py  confluence.py
 |   `-- notifications.py  s3_connector.py
 |-- rag/
 |   |-- engine.py             # ChromaDB dual-query
-|   `-- ingest.py             # Confluence / PDF / Jira ingestion
-|-- models/                   # Pydantic models
-|-- storage/sqlite_store.py   # Draft persistence + metrics
+|   `-- ingest.py             # Confluence / PDF / raw text / Jira resolved ingestion
+|-- models/                   # Pydantic models (Draft includes original_body)
+|-- storage/sqlite_store.py   # Draft persistence + metrics + purge_stale
 `-- config.py                 # All settings (env vars)
 ```
 

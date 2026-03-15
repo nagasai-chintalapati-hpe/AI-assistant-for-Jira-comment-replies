@@ -56,11 +56,16 @@ queue = [
 s3 = [
     "boto3>=1.34.0",
 ]
+# Prometheus metrics scraping
+observability = [
+    "prometheus-client>=0.20.0",
+]
 # All production optional extras combined
 prod = [
     "redis>=5.0.0",
     "pika>=1.3.0",
     "boto3>=1.34.0",
+    "prometheus-client>=0.20.0",
 ]
 # Everything (dev + prod extras)
 all = [
@@ -74,6 +79,7 @@ all = [
     "redis>=5.0.0",
     "pika>=1.3.0",
     "boto3>=1.34.0",
+    "prometheus-client>=0.20.0",
 ]
 
 [project.scripts]
