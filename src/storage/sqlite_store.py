@@ -266,6 +266,42 @@ class SQLiteDraftStore:
         logger.debug("Updated body for draft %s (original preserved)", draft_id)
         return True
 
+    def find_recent_by_issue(
+        self,
+        issue_key: str,
+        limit: int = 20,
+        days: int = 180,
+    ) -> list[dict]:
+        """Return recent drafts for *issue_key* (newest first).
+
+        Used by :class:`~src.agent.duplicate_detector.DuplicateDetector` to
+        compare incoming comments against past replies on the same issue.
+
+        Parameters
+        ----------
+        issue_key:
+            Jira issue key to filter by.
+        limit:
+            Maximum rows to return.
+        days:
+            Only consider drafts created within this many days (default 180).
+        """
+        from datetime import timedelta
+
+        cutoff = (
+            datetime.now(timezone.utc) - timedelta(days=days)
+        ).isoformat()
+        rows = self._conn.execute(
+            """
+            SELECT data_json FROM drafts
+            WHERE issue_key = ? AND created_at >= ?
+            ORDER BY created_at DESC
+            LIMIT ?
+            """,
+            (issue_key, cutoff, limit),
+        ).fetchall()
+        return [json.loads(r["data_json"]) for r in rows]
+
     def purge_stale(self, days: int = 30) -> int:
         """Delete unactioned (still GENERATED) drafts older than *days* days.
 

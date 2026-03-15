@@ -32,8 +32,11 @@ from src.api.deps import (
 from src.models.webhook import JiraWebhookEvent
 from src.models.comment import Comment
 from src.utils.redactor import redact_with_stats
+from src.agent.duplicate_detector import DuplicateDetector
 
 logger = logging.getLogger(__name__)
+
+_duplicate_detector = DuplicateDetector()
 
 
 def _sync_queue_handler(event_dict: dict) -> None:
@@ -117,6 +120,16 @@ async def _orchestrate(event: JiraWebhookEvent) -> dict:
     # 4. Context collection (deferred if Jira creds not configured)
     context = _collect_context_safe(comment.issue_key)
 
+    # 4b. Duplicate detection — scan past drafts on the same issue
+    _dup_result = _duplicate_detector.check(
+        comment_body=comment.body,
+        issue_key=comment.issue_key,
+        draft_store=draft_store,
+    )
+
+    # 4c. Pattern detection — check for 3+ open issues on same component/version
+    _pattern_note = _detect_pattern(context)
+
     # 5. Draft response
     draft = drafter.draft(
         comment,
@@ -124,6 +137,8 @@ async def _orchestrate(event: JiraWebhookEvent) -> dict:
         context,
         redaction_count=_redaction_count,
         pipeline_start_ms=_pipeline_start,
+        similar_drafts=_dup_result.to_dict_list() or None,
+        pattern_note=_pattern_note,
     )
     logger.info(
         "Generated draft %s for %s (pipeline=%.0f ms, redactions=%d)",
@@ -154,6 +169,58 @@ async def _orchestrate(event: JiraWebhookEvent) -> dict:
         "confidence": classification.confidence,
         "draft_id": draft.draft_id,
     }
+
+
+def _detect_pattern(context) -> str | None:
+    """Return a pattern_note when 3+ open Jira issues share the same component/version.
+
+    Queries the live Jira API (via ``search_issues``) so the count is always
+    fresh.  Returns ``None`` when Jira is unconfigured or the count is < 3.
+    """
+    if _jira_client is None:
+        return None
+
+    ctx = context.issue_context
+    components = ctx.components or []
+    versions = ctx.versions or []
+
+    if not components and not versions:
+        return None
+
+    component = components[0] if components else None
+    version = versions[0] if versions else None
+
+    jql_parts = ["issuetype in (Bug, Defect)", "status not in (Done, Closed, Resolved)"]
+    if component:
+        jql_parts.append(f'component = "{component}"')
+    if version:
+        jql_parts.append(f'affectedVersion = "{version}"')
+
+    try:
+        issues = _jira_client.search_issues(
+            " AND ".join(jql_parts),
+            max_results=50,
+            fields=["key", "summary"],
+        )
+        count = len(issues)
+        if count >= 3:
+            parts: list[str] = []
+            if version:
+                parts.append(f"v{version}")
+            if component:
+                parts.append(component)
+            descriptor = " / ".join(parts) if parts else "this area"
+            logger.info(
+                "Pattern detected: %d open issues on %s", count, descriptor
+            )
+            return (
+                f"Pattern detected: {count} open Bug/Defect issues on "
+                f"{descriptor} — possible systemic issue."
+            )
+    except Exception as exc:
+        logger.debug("Pattern check skipped (%s)", exc)
+
+    return None
 
 
 def _collect_context_safe(issue_key: str):

@@ -137,6 +137,8 @@ class ResponseDrafter:
         context: ContextCollectionResult,
         redaction_count: int = 0,
         pipeline_start_ms: Optional[float] = None,
+        similar_drafts: Optional[list[dict]] = None,
+        pattern_note: Optional[str] = None,
     ) -> Draft:
         """Generate a draft response to a comment.
 
@@ -151,6 +153,11 @@ class ResponseDrafter:
         pipeline_start_ms : float | None
             ``time.monotonic()`` value captured at the start of the orchestrator
             so the total pipeline wall-clock time can be recorded.
+        similar_drafts : list[dict] | None
+            Past drafts on the same issue with overlapping content, surfaced in
+            the review UI as a "possible duplicate" warning.
+        pattern_note : str | None
+            Systemic-bug note when 3+ open issues share the same component/version.
         """
         # 1. Template-fill
         template_body = self._fill_template(comment, classification, context)
@@ -192,6 +199,8 @@ class ResponseDrafter:
             hallucination_flag=hallucination_flag,
             redaction_count=redaction_count,
             pipeline_duration_ms=round(pipeline_ms, 1),
+            similar_drafts=similar_drafts,
+            pattern_note=pattern_note,
         )
 
     # Copilot SDK refinement

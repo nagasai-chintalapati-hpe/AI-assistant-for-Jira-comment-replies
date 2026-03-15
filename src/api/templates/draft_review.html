@@ -108,6 +108,43 @@
   <!-- Right: Evidence panel -->
   <div class="col-lg-5">
 
+    <!-- Pattern detected alert -->
+    {% if draft.pattern_note %}
+    <div class="alert alert-danger d-flex gap-2 align-items-start mb-3 py-2" role="alert">
+      <span style="font-size:1.1rem;">⚡</span>
+      <div>
+        <div class="fw-semibold small">Systemic Pattern Detected</div>
+        <div class="small">{{ draft.pattern_note }}</div>
+      </div>
+    </div>
+    {% endif %}
+
+    <!-- Possible duplicate warning -->
+    {% if draft.similar_drafts %}
+    <div class="card mb-3 border-warning">
+      <div class="card-header bg-warning bg-opacity-10 fw-semibold small d-flex gap-2 align-items-center">
+        <span></span> You may have already replied to this
+      </div>
+      <ul class="list-group list-group-flush">
+        {% for sd in draft.similar_drafts %}
+        <li class="list-group-item small">
+          <div class="d-flex justify-content-between align-items-center">
+            <a href="/ui/drafts/{{ sd.draft_id }}" class="text-decoration-none fw-semibold font-monospace">{{ sd.draft_id }}</a>
+            <span class="badge
+              {% if sd.status == 'approved' or sd.status == 'posted' %}bg-success
+              {% elif sd.status == 'rejected' %}bg-danger
+              {% else %}bg-warning text-dark{% endif %} ms-2">{{ sd.status }}</span>
+          </div>
+          <div class="text-muted mt-1" style="font-size:0.77rem;">{{ sd.body_preview }}…</div>
+          <div class="text-secondary mt-1" style="font-size:0.72rem;">
+            Similarity {{ "%.0f"|format(sd.similarity * 100) }}% &middot; {{ sd.created_at }}
+          </div>
+        </li>
+        {% endfor %}
+      </ul>
+    </div>
+    {% endif %}
+
     <!-- What's missing -->
     {% if missing_context %}
     <div class="card mb-3 border-warning">

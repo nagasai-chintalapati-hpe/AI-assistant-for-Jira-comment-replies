@@ -52,6 +52,10 @@ class Draft(BaseModel):
     redaction_count: int = 0             # PII/secret patterns scrubbed before LLM send
     pipeline_duration_ms: float = 0.0   # total wall-clock ms from webhook receipt to draft stored
 
+    # Duplicate & pattern intelligence
+    similar_drafts: Optional[list[dict]] = None  # past drafts with overlapping content on same issue
+    pattern_note: Optional[str] = None           # systemic-bug note when 3+ issues share component/version
+
     model_config = ConfigDict(
         json_schema_extra={
             "example": {

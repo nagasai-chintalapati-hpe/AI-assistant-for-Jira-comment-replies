@@ -32,8 +32,10 @@ A **FastAPI** service that listens for Jira webhook events, classifies engineer 
 | Human-in-the-loop UI | `/ui` review dashboard — approve, edit inline, or reject |
 | Teams AdaptiveCard | Notification with Approve / Reject buttons and a Review link |
 | Jira audit field | Approved draft written to `JIRA_DRAFT_FIELD_ID` before posting |
+| Duplicate detection | Jaccard token similarity against past drafts on the same issue — review UI warns "you may have already replied to this" |
+| Systemic pattern alert | When 3+ open Bug/Defect issues share the same component and version, a red alert is attached to every draft: "We've seen N similar reports on v2.x.x" |
 | Webhook security | HMAC-SHA256 signature validation + per-IP rate limiting |
-| Test coverage | 367 unit tests, 0 failures |
+| Test coverage | 411 unit tests, 0 failures |
 
 ---
 
@@ -74,9 +76,11 @@ Full topology: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
 2. **Classify** — bucket + confidence score (0-1) via Copilot SDK or keyword rules
 3. **Collect context** — parallel fan-out: TestRail, Git, ELK, Jenkins, S3, RAG
 4. **Infer author role** — QA / DevOps / Developer from display name / email
-5. **Draft** — template filled with evidence, optionally refined by LLM
-6. **Review** — engineer approves, edits, or rejects via `/ui` or Teams card
-7. **Post** — on approve: write audit field then post comment to Jira
+5. **Duplicate detection** — Jaccard similarity against past drafts on the same issue; similar drafts surfaced in review UI
+6. **Pattern detection** — JQL query for 3+ open Bug/Defect issues on same component/version; systemic note attached to draft
+7. **Draft** — template filled with evidence, duplicate/pattern context, optionally refined by LLM
+8. **Review** — engineer approves, edits, or rejects via `/ui` or Teams card
+9. **Post** — on approve: write audit field then post comment to Jira
 
 Draft structure: Acknowledge, Evidence, Repro steps, Missing info, Next action
 
@@ -304,6 +308,8 @@ pytest tests/unit/ --cov=src --cov-report=html && open htmlcov/index.html
 pytest tests/integration/ -v
 ```
 
+411 tests, 0 failures.
+
 ---
 
 ## Project Structure
@@ -316,7 +322,8 @@ src/
 |-- agent/
 |   |-- classifier.py         # 8-bucket classifier
 |   |-- context_collector.py  # Fan-out to all integrations + RAG
-|   `-- drafter.py            # Draft generation (original_body preserved)
+|   |-- drafter.py            # Draft generation (original_body preserved)
+|   `-- duplicate_detector.py # Jaccard similarity check against past drafts
 |-- integrations/
 |   |-- jira.py  testrail.py  git.py
 |   |-- log_lookup.py  confluence.py
