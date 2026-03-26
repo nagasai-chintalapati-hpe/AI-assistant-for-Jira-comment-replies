@@ -13,12 +13,25 @@ _ENV_FILE = Path(__file__).resolve().parents[1] / ".env"
 load_dotenv(_ENV_FILE)
 
 
+class ConfigurationError(Exception):
+    """Raised when configuration validation fails."""
+
+
 @dataclass(frozen=True)
 class JiraConfig:
     base_url: str = os.getenv("JIRA_BASE_URL", "")
     username: str = os.getenv("JIRA_USERNAME", "")
     api_token: str = os.getenv("JIRA_API_TOKEN", "")
     draft_field_id: str = os.getenv("JIRA_DRAFT_FIELD_ID", "")  # e.g. customfield_10200
+
+    def __post_init__(self):
+        if os.getenv("ENV") == "production":
+            if not self.base_url.startswith("https://"):
+                raise ConfigurationError("JIRA_BASE_URL must use HTTPS in production")
+            if not self.username:
+                raise ConfigurationError("JIRA_USERNAME is required in production")
+            if not self.api_token:
+                raise ConfigurationError("JIRA_API_TOKEN is required in production")
 
 
 @dataclass(frozen=True)
@@ -28,6 +41,12 @@ class CopilotConfig:
     model: str = os.getenv("COPILOT_MODEL", "gpt-4o")
     temperature: float = float(os.getenv("COPILOT_TEMPERATURE", "0.1"))
     max_tokens: int = int(os.getenv("COPILOT_MAX_TOKENS", "1024"))
+
+    def __post_init__(self):
+        if not 0.0 <= self.temperature <= 1.0:
+            raise ConfigurationError("COPILOT_TEMPERATURE must be between 0.0 and 1.0")
+        if self.max_tokens < 128:
+            raise ConfigurationError("COPILOT_MAX_TOKENS must be >= 128")
 
 
 @dataclass(frozen=True)
@@ -126,6 +145,15 @@ class NotificationConfig:
     email_from: str = os.getenv("EMAIL_FROM", "")
     email_to: str = os.getenv("EMAIL_TO", "")  # comma-separated
 
+    def __post_init__(self):
+        if self.smtp_host:
+            if not self.smtp_username:
+                raise ConfigurationError("SMTP_USERNAME required when SMTP_HOST is set")
+            if not self.smtp_password:
+                raise ConfigurationError("SMTP_PASSWORD required when SMTP_HOST is set")
+        if not 1 <= self.smtp_port <= 65535:
+            raise ConfigurationError("SMTP_PORT must be between 1 and 65535")
+
 
 @dataclass(frozen=True)
 class WebhookConfig:
@@ -201,6 +229,15 @@ class AppConfig:
     # Public base URL of this service — used for Review UI links in Teams cards
     base_url: str = os.getenv("APP_BASE_URL", "http://localhost:8000")
 
+    def __post_init__(self):
+        valid = {"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"}
+        if self.log_level.upper() not in valid:
+            raise ConfigurationError(f"LOG_LEVEL must be one of {sorted(valid)}")
+        if self.port < 1:
+            raise ConfigurationError("APP_PORT must be >= 1")
+        if self.max_comments < 1:
+            raise ConfigurationError("MAX_COMMENTS must be >= 1")
+
 
 @dataclass(frozen=True)
 class Settings:
@@ -221,6 +258,47 @@ class Settings:
     redis: RedisConfig = field(default_factory=RedisConfig)
     queue: QueueConfig = field(default_factory=QueueConfig)
     dashboard: DashboardConfig = field(default_factory=DashboardConfig)
+
+
+def _load_settings() -> Settings:
+    """Build Settings from current environment variables with validation."""
+    try:
+        return Settings(
+            jira=JiraConfig(
+                base_url=os.getenv("JIRA_BASE_URL", ""),
+                username=os.getenv("JIRA_USERNAME", ""),
+                api_token=os.getenv("JIRA_API_TOKEN", ""),
+                draft_field_id=os.getenv("JIRA_DRAFT_FIELD_ID", ""),
+            ),
+            copilot=CopilotConfig(
+                api_key=os.getenv("COPILOT_API_KEY", ""),
+                base_url=os.getenv("COPILOT_BASE_URL", "https://api.githubcopilot.com"),
+                model=os.getenv("COPILOT_MODEL", "gpt-4o"),
+                temperature=float(os.getenv("COPILOT_TEMPERATURE", "0.1")),
+                max_tokens=int(os.getenv("COPILOT_MAX_TOKENS", "1024")),
+            ),
+            notifications=NotificationConfig(
+                teams_webhook_url=os.getenv("TEAMS_WEBHOOK_URL", ""),
+                smtp_host=os.getenv("SMTP_HOST", ""),
+                smtp_port=int(os.getenv("SMTP_PORT", "587")),
+                smtp_username=os.getenv("SMTP_USERNAME", ""),
+                smtp_password=os.getenv("SMTP_PASSWORD", ""),
+                email_from=os.getenv("EMAIL_FROM", ""),
+                email_to=os.getenv("EMAIL_TO", ""),
+            ),
+            app=AppConfig(
+                host=os.getenv("APP_HOST", "0.0.0.0"),
+                port=int(os.getenv("APP_PORT", "8000")),
+                log_level=os.getenv("LOG_LEVEL", "INFO"),
+                max_comments=int(os.getenv("MAX_COMMENTS", "10")),
+                db_path=os.getenv("ASSISTANT_DB_PATH", ".data/assistant.db"),
+                base_url=os.getenv("APP_BASE_URL", "http://localhost:8000"),
+            ),
+        )
+    except ConfigurationError:
+        raise
+    except (ValueError, TypeError) as exc:
+        raise ConfigurationError(str(exc)) from exc
 
 
 # Module-level singleton

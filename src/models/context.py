@@ -1,8 +1,7 @@
 """Context collection data models."""
 
 from datetime import datetime
-from typing import Any, Optional
-
+from typing import Optional, Any
 from pydantic import BaseModel
 
 from src.models.rag import RAGSnippet, LogEntry
