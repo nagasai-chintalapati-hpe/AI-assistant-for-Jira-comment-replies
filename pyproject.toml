@@ -10,7 +10,8 @@ readme = "README.md"
 requires-python = ">=3.10"
 authors = [
     {name = "Nagasai", email = "nagasai.chintalapati@hpe.com"},
-    {name = "Yousef", email = "yousef.konswah@hpe.com"}
+    {name = "Yousef", email = "yousef.konswah@hpe.com"},
+    {name = "Vinnarasu", email = "vinnarasu.ganesan@hpe.com"}
 ]
 
 dependencies = [

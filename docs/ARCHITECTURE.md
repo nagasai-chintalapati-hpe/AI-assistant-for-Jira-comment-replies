@@ -14,7 +14,7 @@
          │
 ┌────────▼─────────────────────────────────────────────────────┐
 │  DMZ                                                         │
-│  Webhook Relay (ngrok / nginx) + HMAC validation             │
+│  Reverse Proxy (nginx / HAProxy) + HMAC validation           │
 │  RabbitMQ (optional async queue)                             │
 └───────────────┬──────────────────────────────────────────────┘
                 │

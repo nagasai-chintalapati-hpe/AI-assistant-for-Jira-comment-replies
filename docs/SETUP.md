@@ -9,7 +9,7 @@
 ## Install
 
 ```bash
-git clone <repo-url> && cd AI-assistant-for-Jira-comment-replies
+git clone git@github.com:nagasai-chintalapati-hpe/AI-assistant-for-Jira-comment-replies.git && cd AI-assistant-for-Jira-comment-replies
 python3 -m venv .venv && source .venv/bin/activate
 pip install -e ".[dev]"
 ```
@@ -72,19 +72,6 @@ cp .env.example .env
 
 ## Run
 
-### Development
-
-```bash
-uvicorn src.api.app:app --reload --host 0.0.0.0 --port 8000
-```
-
-### Expose to Jira Cloud
-
-```bash
-ngrok http 8000
-# Use the ngrok URL as your Jira webhook URL
-```
-
 ### Docker (production)
 
 ```bash
@@ -112,7 +99,7 @@ The container auto-restarts on crash/reboot and persists data via Docker volumes
 ## Tests
 
 ```bash
-pytest tests/unit/ -v              # 495 tests
+pytest tests/unit/ -v              # unit tests
 pytest tests/unit/ --cov=src       # with coverage
 pytest tests/integration/ -v       # requires live credentials
 ```

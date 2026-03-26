@@ -4,7 +4,7 @@
 
 A **FastAPI** service that listens for Jira webhooks, classifies comments into intent buckets, collects evidence from TestRail, Git, Jenkins, Confluence, and S3, then drafts a structured reply for human approval.
 
-**Authors:** Nagasai Chintalapati · Yousef Konswah — HPE 2026
+**Authors:** Nagasai Chintalapati · Yousef Konswah · Vinnarasu Ganesan — HPE 2026
 
 ---
 
@@ -32,7 +32,6 @@ A **FastAPI** service that listens for Jira webhooks, classifies comments into i
 - **Analytics dashboard** — `/dashboard` with KPIs, charts, severity challenge log
 - **Teams notifications** — AdaptiveCard with Approve/Reject buttons
 - **Webhook security** — HMAC-SHA256 + per-IP rate limiting
-- **495 unit tests, 0 failures**
 
 ---
 
@@ -40,32 +39,17 @@ A **FastAPI** service that listens for Jira webhooks, classifies comments into i
 
 ```bash
 # Clone and install
-git clone <repo-url> && cd AI-assistant-for-Jira-comment-replies
-python -m venv .venv && source .venv/bin/activate
-pip install -e ".[dev]"
+git clone git@github.com:nagasai-chintalapati-hpe/AI-assistant-for-Jira-comment-replies.git && cd AI-assistant-for-Jira-comment-replies
 
 # Configure
 cp .env.example .env
 # Set: JIRA_BASE_URL, JIRA_USERNAME, JIRA_API_TOKEN
 
-# Start
-uvicorn src.api.app:app --host 0.0.0.0 --port 8000 --reload
+# Run
+docker compose up -d --build
 
 # Open
 open http://localhost:8000/ui
-```
-
-**Docker:**
-
-```bash
-docker compose up -d --build
-```
-
-**Expose to Jira Cloud:**
-
-```bash
-ngrok http 8000
-# Set Jira webhook URL → https://<id>.ngrok-free.app/webhook/jira
 ```
 
 ---
@@ -176,7 +160,7 @@ pip install -e ".[prod]"           # All of the above
 ## Tests
 
 ```bash
-pytest tests/unit/ -v                # 495 tests
+pytest tests/unit/ -v                # unit tests
 pytest tests/unit/ --cov=src         # with coverage
 pytest tests/integration/ -v         # requires live credentials
 ```
