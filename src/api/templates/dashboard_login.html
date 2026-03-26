@@ -1,0 +1,39 @@
+{% extends "UI.html" %}
+{% block title %}Dashboard Login — Jira Comment Assistant{% endblock %}
+
+{% block content %}
+
+<div class="login-wrapper">
+  <div class="card login-card">
+    <div class="card-header">
+      <img src="/static/images/hpe%20logo.jpg" alt="HPE" class="hpe-logo">
+      <h5><i class="bi bi-bar-chart-line"></i> Dashboard Access</h5>
+    </div>
+    <div class="card-body">
+      {% if error %}
+      <div class="alert alert-danger py-2 mb-3" role="alert">
+        <i class="bi bi-exclamation-triangle"></i> {{ error }}
+      </div>
+      {% endif %}
+
+      <form method="POST" action="/dashboard/login" autocomplete="off">
+        <div class="mb-3">
+          <label for="token" class="form-label">Dashboard Token</label>
+          <input type="password" class="form-control" id="token" name="token"
+                 placeholder="Enter the shared dashboard token"
+                 autofocus required>
+        </div>
+        <button type="submit" class="btn btn-primary w-100">
+          <i class="bi bi-unlock"></i> Unlock Dashboard
+        </button>
+      </form>
+
+      <p class="login-hint">
+        <i class="bi bi-info-circle"></i>
+        Ask your team lead for the dashboard token.
+      </p>
+    </div>
+  </div>
+</div>
+
+{% endblock %}
