@@ -1,8 +1,4 @@
-"""Tests for JiraClient – full issue and comment retrieval.
-
-All tests mock the underlying atlassian.Jira client so we never
-hit a real Jira instance.
-"""
+"""Tests for JiraClient – issue and comment retrieval (mocked)."""
 
 import pytest
 from unittest.mock import MagicMock, patch

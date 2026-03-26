@@ -1,9 +1,4 @@
-"""Tests for RAG integration with context collector and drafter.
-
-Drafter tests use model fixtures (no external calls).
-Context collector tests use a real ChromaDB-backed RAG engine and mock
-only the Jira REST API (external service).
-"""
+"""Tests for RAG integration with context collector and drafter."""
 
 import pytest
 from unittest.mock import MagicMock, patch

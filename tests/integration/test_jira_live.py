@@ -1,11 +1,4 @@
-"""Live integration tests for JiraClient against nagasai42006.atlassian.net.
-
-These tests hit the real Jira Cloud REST API and are skipped automatically
-when JIRA_API_TOKEN is not set in the environment.
-
-Run:
-    pytest tests/integration/test_jira_live.py -v
-"""
+"""Live integration tests for JiraClient (skipped without credentials)."""
 
 import os
 import pytest

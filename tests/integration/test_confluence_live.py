@@ -1,10 +1,4 @@
-"""Live integration tests for ConfluenceClient against hpe.atlassian.net.
-
-Skipped when CONFLUENCE_API_TOKEN is not set.
-
-Run:
-    pytest tests/integration/test_confluence_live.py -v
-"""
+"""Live integration tests for ConfluenceClient (skipped without credentials)."""
 
 import os
 import pytest

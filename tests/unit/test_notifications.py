@@ -1,7 +1,4 @@
-"""Tests for notification integrations — Teams + Email.
-
-All network calls are mocked; no real HTTP or SMTP traffic.
-"""
+"""Tests for notification integrations — Teams + Email."""
 
 import pytest
 from unittest.mock import patch, MagicMock

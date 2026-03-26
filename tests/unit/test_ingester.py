@@ -1,8 +1,4 @@
-"""Tests for the document ingester — chunking, PDF, and text ingestion.
-
-Uses a real ChromaDB-backed RAG engine and real pypdf parsing.
-PDF fixtures are generated with fpdf2.  No mocks for local dependencies.
-"""
+"""Tests for document ingester — chunking, PDF, and text ingestion."""
 
 import pytest
 from unittest.mock import patch, MagicMock

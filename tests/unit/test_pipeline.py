@@ -79,7 +79,7 @@ class TestWebhookEndpoint:
         assert data["draft_id"].startswith("draft_")
 
     def test_filtered_event_returns_reason(self):
-        payload = _webhook_payload(issue_type="Story")
+        payload = _webhook_payload(issue_type="Custom Unknown Type")
         resp = client.post("/webhook/jira", json=payload)
         assert resp.status_code == 200
         assert resp.json()["status"] == "filtered"

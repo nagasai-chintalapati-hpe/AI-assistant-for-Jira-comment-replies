@@ -85,11 +85,11 @@ class TestEventFilter:
         assert result.accepted is True
 
     def test_reject_non_bug_issue_type(self, event_filter):
-        payload = _make_payload(issue_type="Story")
+        payload = _make_payload(issue_type="Custom Unknown Type")
         event = JiraWebhookEvent(**payload)
         result = event_filter.evaluate(event)
         assert result.accepted is False
-        assert "not Bug/Defect" in result.reason
+        assert "not in the allowed set" in result.reason or "not Bug/Defect" in result.reason
 
     def test_reject_disallowed_status(self, event_filter):
         payload = _make_payload(status="Archived")

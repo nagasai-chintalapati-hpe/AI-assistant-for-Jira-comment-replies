@@ -1,14 +1,4 @@
-"""End-to-end pipeline integration test.
-
-Exercises the full flow:
-    Jira issue → ContextCollector → Classifier → ResponseDrafter
-
-Uses real Jira Cloud data (IP-7 on nagasai42006.atlassian.net).
-Skipped when credentials are missing.
-
-Run:
-    pytest tests/integration/test_full_pipeline.py -v
-"""
+"""End-to-end pipeline integration test — Jira → Collector → Classifier → Drafter."""
 
 import os
 import pytest
