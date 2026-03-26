@@ -25,6 +25,9 @@ htmlcov/
 .coverage
 *.cover
 
+# Local runtime data
+.data/
+
 # IDE
 .vscode/
 .idea/

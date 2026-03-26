@@ -2,7 +2,8 @@
 
 from enum import Enum
 from typing import Optional
-from pydantic import BaseModel, ConfigDict
+
+from pydantic import BaseModel
 
 
 class CommentType(str, Enum):
@@ -27,19 +28,3 @@ class CommentClassification(BaseModel):
     reasoning: str
     missing_context: Optional[list[str]] = None  # What info is missing
     suggested_questions: Optional[list[str]] = None  # Questions to ask for clarification
-
-    model_config = ConfigDict(
-        json_schema_extra={
-            "example": {
-                "comment_id": "10000",
-                "comment_type": "cannot_reproduce",
-                "confidence": 0.92,
-                "reasoning": "Developer states inability to reproduce with current environment",
-                "missing_context": ["Environment details", "Browser version", "Reproduction steps"],
-                "suggested_questions": [
-                    "What is your environment setup (OS, version)?",
-                    "Can you provide step-by-step reproduction steps?",
-                ],
-            }
-        }
-    )
