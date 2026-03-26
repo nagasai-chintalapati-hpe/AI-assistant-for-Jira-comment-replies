@@ -1,13 +1,4 @@
-"""Notification integrations — Teams webhook + Email (SMTP).
-
-Sends a summary card / email when:
-  • A new draft is generated  (notify_draft_generated)
-  • A draft is approved       (notify_draft_approved)
-  • A draft is rejected       (notify_draft_rejected)
-
-Both channels are **optional** — if credentials are missing the call
-is silently skipped with a log message.
-"""
+"""Notification integrations — Teams webhook + Email (SMTP)."""
 
 from __future__ import annotations
 
@@ -24,13 +15,7 @@ logger = logging.getLogger(__name__)
 
 # Teams Webhook Notifier
 class TeamsNotifier:
-    """Send AdaptiveCard notifications to a Microsoft Teams channel
-    via an incoming webhook URL.
-
-    Cards include direct ``Action.OpenUrl`` buttons to the Draft Review UI
-    and the Jira ticket.  (``Action.OpenUrl`` is compatible with plain
-    incoming webhooks; no bot registration required.)
-    """
+    """Send AdaptiveCard notifications to Teams via incoming webhook."""
 
     def __init__(
         self,
@@ -57,8 +42,10 @@ class TeamsNotifier:
         classification: str,
         confidence: float,
         body_preview: str,
+        evidence_links: Optional[list[dict[str, str]]] = None,
+        missing_info: Optional[list[str]] = None,
     ) -> bool:
-        """Send a ‘new draft’ AdaptiveCard to Teams with Review + Jira action buttons."""
+        """Send a 'new draft' AdaptiveCard to Teams with evidence, checklist, and action buttons."""
         card = self._build_adaptive_card(
             title=f"🤖 New Draft — {issue_key}",
             facts={
@@ -70,6 +57,8 @@ class TeamsNotifier:
             style="accent",
             draft_id=draft_id,
             issue_key=issue_key,
+            evidence_links=evidence_links,
+            missing_info=missing_info,
         )
         return self._send(card)
 
@@ -122,13 +111,10 @@ class TeamsNotifier:
         style: str = "accent",   # "accent"|"good"|"attention"|"warning"|"default"
         draft_id: str = "",
         issue_key: str = "",
+        evidence_links: Optional[list[dict[str, str]]] = None,
+        missing_info: Optional[list[str]] = None,
     ) -> dict[str, Any]:
-        """Build a Teams AdaptiveCard payload.
-
-        Uses ``application/vnd.microsoft.card.adaptive`` format (supersedes the
-        legacy ``MessageCard``).  Actions use ``Action.OpenUrl`` — compatible
-        with plain incoming webhooks without a registered bot.
-        """
+        """Build a Teams AdaptiveCard payload."""
         card_body: list[dict] = [
             {
                 "type": "Container",
@@ -157,11 +143,71 @@ class TeamsNotifier:
             },
         ]
 
+        # Evidence links section
+        if evidence_links:
+            evidence_items: list[dict] = [
+                {
+                    "type": "TextBlock",
+                    "text": "📎 **Evidence**",
+                    "weight": "Bolder",
+                    "spacing": "Medium",
+                    "wrap": True,
+                },
+            ]
+            for ev in evidence_links[:5]:
+                source = ev.get("source", "")
+                url = ev.get("url", "")
+                excerpt = ev.get("excerpt", "")[:100]
+                link_text = f"[{source}]({url})" if url else source
+                evidence_items.append({
+                    "type": "TextBlock",
+                    "text": f"• {link_text}: {excerpt}",
+                    "wrap": True,
+                    "size": "Small",
+                })
+            card_body.append({
+                "type": "Container",
+                "items": evidence_items,
+            })
+
+        # "What's missing" checklist
+        if missing_info:
+            checklist_items: list[dict] = [
+                {
+                    "type": "TextBlock",
+                    "text": "⚠️ **What's Missing**",
+                    "weight": "Bolder",
+                    "spacing": "Medium",
+                    "wrap": True,
+                },
+            ]
+            for item in missing_info[:5]:
+                checklist_items.append({
+                    "type": "TextBlock",
+                    "text": f"☐ {item}",
+                    "wrap": True,
+                    "size": "Small",
+                })
+            card_body.append({
+                "type": "Container",
+                "items": checklist_items,
+            })
+
         actions: list[dict] = []
         if draft_id and self._app_base_url:
             actions.append({
                 "type": "Action.OpenUrl",
                 "title": "📋 Review Draft",
+                "url": f"{self._app_base_url}/ui/drafts/{draft_id}",
+            })
+            actions.append({
+                "type": "Action.OpenUrl",
+                "title": "✅ Approve",
+                "url": f"{self._app_base_url}/ui/drafts/{draft_id}",
+            })
+            actions.append({
+                "type": "Action.OpenUrl",
+                "title": "❌ Reject",
                 "url": f"{self._app_base_url}/ui/drafts/{draft_id}",
             })
         if issue_key and self._jira_base_url:
@@ -345,6 +391,8 @@ class NotificationService:
         classification: str,
         confidence: float,
         body_preview: str,
+        evidence_links: Optional[list[dict[str, str]]] = None,
+        missing_info: Optional[list[str]] = None,
     ) -> dict[str, bool]:
         """Notify all enabled channels about a new draft."""
         results: dict[str, bool] = {}
@@ -356,7 +404,11 @@ class NotificationService:
             body_preview=body_preview,
         )
         if self._teams and self._teams.enabled:
-            results["teams"] = self._teams.notify_draft_generated(**kwargs)
+            results["teams"] = self._teams.notify_draft_generated(
+                **kwargs,
+                evidence_links=evidence_links,
+                missing_info=missing_info,
+            )
         if self._email and self._email.enabled:
             results["email"] = self._email.notify_draft_generated(**kwargs)
         return results

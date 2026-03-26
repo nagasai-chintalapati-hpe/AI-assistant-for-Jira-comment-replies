@@ -1,18 +1,9 @@
-"""Log lookup service — Jenkins API + local file scanning + ELK/OpenSearch.
-
-Provides log retrieval from:
-  • Jenkins build console output (via REST API)
-  • Local log directory (file-based grep)
-  • Elasticsearch / OpenSearch (ELK) via REST query API
-
-Returns structured ``LogEntry`` objects for context enrichment.
-"""
+"""Log lookup service — Jenkins, local files, ELK/OpenSearch."""
 
 from __future__ import annotations
 
 import base64
 import logging
-import os
 import re
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
@@ -22,6 +13,7 @@ import requests
 
 from src.config import settings
 from src.models.rag import LogEntry
+from src.integrations.jenkins import JenkinsClient as _JenkinsHelper
 
 logger = logging.getLogger(__name__)
 
@@ -52,11 +44,11 @@ class LogLookupService:
         self._time_window_hours = default_time_window_hours
 
         # ELK / OpenSearch
-        self._elk_host = (elk_host or settings.elk.host).rstrip("/")
-        self._elk_username = elk_username or settings.elk.username
-        self._elk_password = elk_password or settings.elk.password
-        self._elk_api_key = elk_api_key or settings.elk.api_key
-        self._elk_index = elk_index_pattern or settings.elk.index_pattern
+        self._elk_host = (elk_host if elk_host is not None else settings.elk.host).rstrip("/")
+        self._elk_username = elk_username if elk_username is not None else settings.elk.username
+        self._elk_password = elk_password if elk_password is not None else settings.elk.password
+        self._elk_api_key = elk_api_key if elk_api_key is not None else settings.elk.api_key
+        self._elk_index = elk_index_pattern if elk_index_pattern is not None else settings.elk.index_pattern
         self._elk_max_hits = settings.elk.max_hits
 
     @property
@@ -81,15 +73,7 @@ class LogLookupService:
         job_url: str,
         max_lines: int = 200,
     ) -> Optional[LogEntry]:
-        """Fetch console output from a Jenkins build URL.
-
-        Accepts URLs like:
-            https://jenkins.example.com/job/my-job/42/console
-            https://jenkins.example.com/job/my-job/42/
-
-        Returns a LogEntry with the last *max_lines* of output,
-        or None if the fetch fails.
-        """
+        """Fetch console output from a Jenkins build URL."""
         if not self.jenkins_enabled:
             logger.info("Jenkins not configured — skipping log fetch")
             return None
@@ -138,11 +122,7 @@ class LogLookupService:
         time_window_hours: Optional[int] = None,
         max_entries: int = 20,
     ) -> list[LogEntry]:
-        """Search local log files for lines matching *pattern*.
-
-        Scans files modified within the time window (default from config).
-        Returns up to *max_entries* matching log lines as LogEntry objects.
-        """
+        """Search local log files for lines matching a pattern."""
         if not self.local_enabled:
             logger.info("Local log directory not configured — skipping")
             return []
@@ -189,13 +169,7 @@ class LogLookupService:
         self,
         job_url: str,
     ) -> Optional[dict[str, str]]:
-        """Extract build metadata (commit, version, timestamp) from Jenkins.
-
-        Calls the Jenkins build API JSON endpoint to extract:
-          - commit SHA (from changesets or git parameters)
-          - build display name / version
-          - deployment timestamp
-        """
+        """Extract build metadata (commit, version, timestamp) from Jenkins."""
         if not self.jenkins_enabled:
             return None
 
@@ -238,24 +212,7 @@ class LogLookupService:
         time_window_hours: Optional[int] = None,
         max_entries: Optional[int] = None,
     ) -> list[LogEntry]:
-        """Query ELK / OpenSearch for log entries matching *query*.
-
-        Builds an Elasticsearch Query DSL request combining:
-          • A ``multi_match`` full-text search on ``message`` and ``log.message``
-          • Optional ``term`` filters: ``build_id``, ``environment``, ``correlation_id``
-          • A ``range`` filter on ``@timestamp`` for the given time window
-
-        Args:
-            query: Free-text search (e.g. "SnapshotLockTimeout", "500 POST /snapshot").
-            build_id: Filter by specific build identifier field.
-            env: Filter by environment name (e.g. "staging", "prod").
-            correlation_id: Filter by request/correlation ID.
-            time_window_hours: Look back N hours (defaults to ELK_TIME_WINDOW_HOURS).
-            max_entries: Maximum entries to return (defaults to ELK_MAX_HITS).
-
-        Returns:
-            List of LogEntry objects, empty list when disabled or on error.
-        """
+        """Query ELK / OpenSearch for log entries matching a query."""
         if not self.elk_enabled:
             logger.info("ELK not configured — skipping log search")
             return []
@@ -419,21 +376,17 @@ class LogLookupService:
             return {"Authorization": f"Basic {token}"}
         return {}
 
-    # Helpers
+    # Helpers (delegated to JenkinsClient to avoid duplication)
 
     @staticmethod
     def _normalise_console_url(url: str) -> str:
         """Ensure the URL points to /consoleText (plain text output)."""
-        url = url.rstrip("/")
-        url = re.sub(r"/(console|consoleFull|consoleText)$", "", url)
-        return f"{url}/consoleText"
+        return _JenkinsHelper._normalise_console_url(url)
 
     @staticmethod
     def _normalise_api_url(url: str) -> str:
         """Convert a Jenkins build URL to its JSON API endpoint."""
-        url = url.rstrip("/")
-        url = re.sub(r"/(console|consoleFull|consoleText)$", "", url)
-        return f"{url}/api/json"
+        return _JenkinsHelper._normalise_api_url(url)
 
     @staticmethod
     def _extract_build_number(url: str) -> str:
@@ -444,16 +397,5 @@ class LogLookupService:
     @staticmethod
     def _extract_commit(build_data: dict) -> str:
         """Extract the first commit SHA from Jenkins build data."""
-        # Try changeSets first
-        for cs in build_data.get("changeSets", []):
-            for item in cs.get("items", []):
-                if item.get("commitId"):
-                    return item["commitId"][:12]
-        # Try build parameters
-        for action in build_data.get("actions", []):
-            for param in action.get("parameters", []):
-                name = (param.get("name") or "").lower()
-                if name in ("git_commit", "commit_sha", "sha"):
-                    return str(param.get("value", ""))[:12]
-        return ""
+        return _JenkinsHelper._extract_commit(build_data)
 

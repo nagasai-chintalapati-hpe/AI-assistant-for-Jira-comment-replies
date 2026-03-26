@@ -1,29 +1,9 @@
-"""S3 / MinIO artifact fetcher.
-
-Retrieves build artifacts, test reports, and log files from S3-compatible
-object storage.  Supports:
-
-  * Pre-signed URL fetch  — no AWS credentials required; just a URL.
-  * Direct boto3 access   — bucket + credentials from S3Config env vars.
-  * MinIO / on-prem S3    — set ``S3_ENDPOINT_URL`` to override the AWS endpoint.
-
-Degrades gracefully when not configured — returns empty lists rather than
-raising, so the rest of the pipeline is unaffected.
-
-Environment variables
----------------------
-S3_BUCKET           Default bucket name.
-S3_ENDPOINT_URL     Custom endpoint URL (MinIO, localstack, etc.).
-S3_ACCESS_KEY       AWS / MinIO access key ID.
-S3_SECRET_KEY       AWS / MinIO secret access key.
-S3_REGION           AWS region (default ``us-east-1``).
-S3_ARTIFACTS_PREFIX Prefix path inside the bucket (default ``artifacts/``).
-"""
+"""S3 / MinIO artifact fetcher."""
 
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
@@ -60,19 +40,7 @@ class S3Artifact:
 # Fetcher
 
 class S3ArtifactFetcher:
-    """Fetch build artifacts and log files from S3-compatible storage.
-
-    Parameters
-    ----------
-    bucket : str, optional
-        Override the ``S3_BUCKET`` env var.
-    endpoint_url : str, optional
-        Override endpoint (for MinIO / on-prem S3 stores).
-    access_key / secret_key : str, optional
-        Override env-var credentials.
-    region : str, optional
-        AWS region (default ``us-east-1``).
-    """
+    """Fetch build artifacts from S3-compatible storage."""
 
     def __init__(
         self,
@@ -137,25 +105,7 @@ class S3ArtifactFetcher:
     # Public API
 
     def fetch_by_presigned_url(self, url: str, timeout: int = 30) -> bytes:
-        """Download an object via a pre-signed URL (no credentials required).
-
-        Parameters
-        ----------
-        url :
-            HTTPS pre-signed URL pointing to an S3 object.
-        timeout :
-            Request timeout in seconds.
-
-        Returns
-        -------
-        bytes
-            Raw object content.
-
-        Raises
-        ------
-        requests.HTTPError
-            On a non-2xx response.
-        """
+        """Download an object via a pre-signed URL."""
         import requests
 
         resp = requests.get(url, timeout=timeout)
@@ -163,19 +113,7 @@ class S3ArtifactFetcher:
         return resp.content
 
     def fetch_object(self, key: str, bucket: Optional[str] = None) -> S3Artifact:
-        """Fetch a single S3 object by key.
-
-        Parameters
-        ----------
-        key :
-            S3 object key (path within the bucket).
-        bucket :
-            Override the default bucket for this call.
-
-        Returns
-        -------
-        S3Artifact
-        """
+        """Fetch a single S3 object by key."""
         if not self._client:
             raise RuntimeError(
                 "S3 client not configured — set S3_BUCKET, S3_ACCESS_KEY, S3_SECRET_KEY"
@@ -197,13 +135,7 @@ class S3ArtifactFetcher:
         bucket: Optional[str] = None,
         max_keys: int = 100,
     ) -> list[dict[str, Any]]:
-        """List objects in the bucket with an optional prefix filter.
-
-        Returns
-        -------
-        list[dict]
-            Each item has ``key``, ``size``, ``last_modified``, ``etag``.
-        """
+        """List objects in the bucket with optional prefix filter."""
         if not self._client:
             raise RuntimeError("S3 client not configured")
 
@@ -228,20 +160,7 @@ class S3ArtifactFetcher:
         bucket: Optional[str] = None,
         expires_in: int = 3600,
     ) -> str:
-        """Generate a pre-signed download URL for an object.
-
-        Parameters
-        ----------
-        key :
-            S3 object key.
-        expires_in :
-            URL validity in seconds (default 1 hour).
-
-        Returns
-        -------
-        str
-            HTTPS pre-signed URL.
-        """
+        """Generate a pre-signed download URL for an object."""
         if not self._client:
             raise RuntimeError("S3 client not configured")
         return self._client.generate_presigned_url(
@@ -258,23 +177,7 @@ class S3ArtifactFetcher:
     def fetch_artifacts_for_build(
         self, build_id: str, max_items: int = 10
     ) -> list[S3Artifact]:
-        """Fetch all artifacts stored under a given build-ID prefix.
-
-        Looks up ``{S3_ARTIFACTS_PREFIX}{build_id}/`` in the configured
-        bucket and downloads up to *max_items* objects.
-
-        Parameters
-        ----------
-        build_id :
-            Build identifier (version string, commit SHA, etc.).
-        max_items :
-            Maximum number of objects to download.
-
-        Returns
-        -------
-        list[S3Artifact]
-            Retrieved artifacts (empty list on any failure).
-        """
+        """Fetch all artifacts stored under a given build-ID prefix."""
         prefix = f"{self._prefix}{build_id}/"
         try:
             items = self.list_objects(prefix=prefix, max_keys=max_items)

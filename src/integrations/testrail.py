@@ -1,8 +1,4 @@
-"""TestRail API v2 client — runs, tests, and results.
-
-Auth: API key (production) → session cookie fallback (SSO).
-Set TESTRAIL_SESSION_COOKIE to the ``tr_session`` browser cookie value.
-"""
+"""TestRail API v2 client — runs, tests, and results."""
 
 from __future__ import annotations
 
@@ -258,3 +254,100 @@ class TestRailClient:
             logger.warning("No runs found for project_id=%s suite_id=%s", project_id, suite_id)
             return None
         return self.get_run_summary(runs[0]["id"])
+
+    #  By-marker retrieval 
+
+    def get_tests_by_marker(
+        self,
+        run_id: int,
+        marker: str,
+        status_id: Optional[str] = None,
+        limit: int = 250,
+    ) -> list[dict[str, Any]]:
+        """Return tests in *run_id* whose ``refs`` field contains *marker* """
+        tests = self.get_tests(run_id, status_id=status_id, limit=limit)
+        marker_lower = marker.lower()
+        return [
+            t for t in tests
+            if marker_lower in (t.get("refs") or "").lower()
+            or marker_lower in (t.get("title") or "").lower()
+            or marker_lower in str(t.get("custom_automation_type") or "").lower()
+        ]
+
+    def get_results_by_marker(
+        self,
+        run_id: int,
+        marker: str,
+        status_id: Optional[str] = None,
+        limit: int = 50,
+    ) -> list[dict[str, Any]]:
+        """Return test results for tests matching a marker in a run."""
+        matched_tests = self.get_tests_by_marker(
+            run_id, marker, status_id=status_id
+        )
+        results: list[dict[str, Any]] = []
+        for t in matched_tests[:limit]:
+            test_id = t.get("id")
+            if not test_id:
+                continue
+            try:
+                test_results = self.get_results_for_test(test_id, limit=3)
+                for r in test_results:
+                    r["_test_title"] = t.get("title", "")
+                    r["_test_refs"] = t.get("refs", "")
+                    r["_case_id"] = t.get("case_id")
+                results.extend(test_results)
+            except Exception as exc:
+                logger.warning(
+                    "Failed to get results for test %s (marker=%s): %s",
+                    test_id, marker, exc,
+                )
+        return results
+
+    def get_run_summary_by_marker(
+        self,
+        run_id: int,
+        marker: str,
+    ) -> dict[str, Any]:
+        """Return a run summary filtered to only tests matching *marker*.
+
+        Like ``get_run_summary`` but scoped to a subset of tests,
+        giving a marker-specific pass/fail breakdown.
+        """
+        run = self.get_run(run_id)
+        all_matching = self.get_tests_by_marker(run_id, marker)
+
+        passed = sum(1 for t in all_matching if t.get("status_id") == 1)
+        failed = sum(1 for t in all_matching if t.get("status_id") == 5)
+        blocked = sum(1 for t in all_matching if t.get("status_id") == 2)
+        retest = sum(1 for t in all_matching if t.get("status_id") == 4)
+        untested = sum(1 for t in all_matching if t.get("status_id") == 3)
+        total = len(all_matching)
+        pass_rate = (passed / total * 100) if total > 0 else 0.0
+
+        failed_tests = [
+            {
+                "title": t.get("title", ""),
+                "status": STATUS_MAP.get(t.get("status_id", 0), "unknown"),
+                "case_id": t.get("case_id"),
+                "test_id": t.get("id"),
+                "refs": t.get("refs", ""),
+            }
+            for t in all_matching
+            if t.get("status_id") in (4, 5)
+        ]
+
+        return {
+            "run_id": run_id,
+            "name": run.get("name", ""),
+            "marker": marker,
+            "url": run.get("url", f"{self._base_url}/index.php?/runs/view/{run_id}"),
+            "passed": passed,
+            "failed": failed,
+            "blocked": blocked,
+            "retest": retest,
+            "untested": untested,
+            "total": total,
+            "pass_rate": round(pass_rate, 1),
+            "failed_tests": failed_tests,
+        }
