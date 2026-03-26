@@ -1,12 +1,4 @@
-"""Shared singletons for the Jira Comment Assistant API.
-
-All stateful objects (stores, clients, notifiers, RAG lazy helpers) are
-instantiated exactly once at process start so that every route module can
-import them without risk of circular dependencies.
-
-Import order matters:
-  security → deps → orchestrator → routes → app
-"""
+"""Shared singletons for the API."""
 
 from __future__ import annotations
 
@@ -30,24 +22,26 @@ from src.integrations.testrail import TestRailClient
 from src.integrations.jira import JiraClient
 from src.integrations.git import GitClient
 from src.integrations.s3_connector import S3ArtifactFetcher
+from src.integrations.jenkins import JenkinsClient
+from src.integrations.confluence import ConfluenceClient
 from src.queue.broker import MessageBroker
 from src.llm.client import get_llm_client
 
 logger = logging.getLogger(__name__)
 
-# ── Persistent stores ─────────────────────────────────────────────────────
+#  Persistent stores 
 
 draft_store = SQLiteDraftStore(db_path=settings.app.db_path)
 _idempotency_store = SQLiteIdempotencyStore(db_path=settings.app.db_path)
 event_filter = EventFilter(idempotency_store=_idempotency_store)
 
-# ── LLM / Classifier / Drafter ────────────────────────────────────────────
+#  LLM / Classifier / Drafter 
 
 _llm_client = get_llm_client()
 classifier = CommentClassifier(llm_client=_llm_client)
 drafter = ResponseDrafter(llm_client=_llm_client)
 
-# ── Tooling layer connectors (each degrades gracefully when unconfigured) ─
+# Tooling layer connectors (each degrades gracefully when unconfigured) ─
 
 _log_lookup = LogLookupService()
 _testrail_client = TestRailClient()
@@ -67,16 +61,23 @@ except Exception:
     _git_client = None
 
 _s3_fetcher = S3ArtifactFetcher()
+_jenkins_client = JenkinsClient()
 
-# ── Message broker (RabbitMQ — disabled by default) ───────────────────────
+_confluence_client: Optional[ConfluenceClient] = None
+try:
+    _confluence_client = ConfluenceClient()
+    if not _confluence_client.enabled:
+        _confluence_client = None
+except Exception:
+    _confluence_client = None
 
 _broker = MessageBroker()
 
-# ── Rate limiter (per IP, Redis-backed or in-memory) ─────────────────────
+# Rate limiter (per IP, Redis-backed or in-memory) 
 
 _rate_limiter = _RateLimiter(rpm=settings.rate_limit.max_requests_per_minute)
 
-# ── Notification channels (Teams + Email) ─────────────────────────────────
+#  Notification channels (Teams Email) 
 
 _teams = TeamsNotifier(webhook_url=os.getenv("TEAMS_WEBHOOK_URL"))
 _email = EmailNotifier(
@@ -93,14 +94,14 @@ _email = EmailNotifier(
 )
 notifier = NotificationService(teams=_teams, email=_email)
 
-# ── RAG pipeline — lazy-initialised on first call ─────────────────────────
+#  RAG pipeline 
 
 _rag_engine = None
 _rag_ingester = None
 
 
 def _get_rag_engine():
-    """Lazy-initialise the RAG engine singleton."""
+    """Lazy-init the RAG engine singleton."""
     global _rag_engine
     if _rag_engine is None:
         from src.rag.engine import RAGEngine
@@ -109,7 +110,7 @@ def _get_rag_engine():
 
 
 def _get_rag_ingester():
-    """Lazy-initialise the document ingester singleton."""
+    """Lazy-init the document ingester singleton."""
     global _rag_ingester
     if _rag_ingester is None:
         from src.rag.ingest import DocumentIngester

@@ -1,20 +1,9 @@
-"""Webhook event filtering and validation.
-
-Five gates applied in order:
-  1. Event type  — comment_created / comment_updated only
-  2. Idempotency — duplicate event IDs rejected
-  3. Issue type  — Bug / Defect only
-  4. Status      — allowed status set (see ALLOWED_STATUSES)
-  5. Presence    — must have both issue and comment fields
-
-Keyword matching is informational only (debug log).
-The classifier uses keywords downstream — they are not a gate here.
-"""
+"""Webhook event filtering and validation."""
 
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Optional
 
 from src.models.webhook import JiraWebhookEvent
@@ -23,7 +12,15 @@ logger = logging.getLogger(__name__)
 
 # Configurable allow-lists
 
-ALLOWED_ISSUE_TYPES: set[str] = {"Bug", "Defect", "bug", "defect"}
+ALLOWED_ISSUE_TYPES: set[str] = {
+    "Bug", "Defect", "Story", "Task", "Sub-task", "Epic",
+    "Improvement", "New Feature", "Support", "Incident",
+    "Problem", "Change", "Service Request",
+    # lowercase variants for case-insensitive matching
+    "bug", "defect", "story", "task", "sub-task", "epic",
+    "improvement", "new feature", "support", "incident",
+    "problem", "change", "service request",
+}
 
 ALLOWED_STATUSES: set[str] = {
     "Open",
@@ -89,12 +86,7 @@ class FilterResult:
 
 
 class EventFilter:
-    """Stateful filter that gates incoming Jira webhook events.
-
-    Idempotency is maintained in both an in-memory set (fast path) and an
-    optional persistent store (survives service restarts). Pass a
-    :class:`~src.storage.sqlite_store.SQLiteIdempotencyStore` for production.
-    """
+    """Stateful filter that gates incoming Jira webhook events."""
 
     def __init__(self, idempotency_store=None) -> None:
         self._seen_event_ids: set[str] = set()  # In-memory fast-path cache
@@ -132,7 +124,7 @@ class EventFilter:
         if issue_type and issue_type not in ALLOWED_ISSUE_TYPES:
             return FilterResult(
                 accepted=False,
-                reason=f"Issue type '{issue_type}' is not Bug/Defect",
+                reason=f"Issue type '{issue_type}' is not in the allowed set",
                 event_id=eid,
             )
 
@@ -163,12 +155,7 @@ class EventFilter:
 
     @staticmethod
     def _comment_is_relevant(event: JiraWebhookEvent) -> bool:
-        """
-        Return True when the comment should be processed.
-
-        Uses keyword matching against the comment body as
-        a proxy for "comment author belongs to the developer group".
-        """
+        """Check if comment contains trigger keywords."""
         if event.comment is None:
             return False
         body_lower = event.comment.body.lower()

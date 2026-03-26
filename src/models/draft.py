@@ -53,8 +53,15 @@ class Draft(BaseModel):
     pipeline_duration_ms: float = 0.0   # total wall-clock ms from webhook receipt to draft stored
 
     # Duplicate & pattern intelligence
+    trigger_comment_body: Optional[str] = None   # original comment that triggered this draft (for duplicate detection)
     similar_drafts: Optional[list[dict]] = None  # past drafts with overlapping content on same issue
     pattern_note: Optional[str] = None           # systemic-bug note when 3+ issues share component/version
+
+    # Severity challenge (Rovo counter-assessment)
+    severity_challenge: Optional[dict] = None    # SeverityChallengeResult.to_dict() when Rovo is challenged
+
+    # Multi-repo tracking
+    repos_searched: Optional[list[str]] = None   # repos scanned for PR correlation
 
     model_config = ConfigDict(
         json_schema_extra={

@@ -1,9 +1,4 @@
-"""Admin maintenance routes.
-
-Endpoints
----------
-POST /admin/drafts/purge-stale  Delete old unactioned GENERATED drafts
-"""
+"""Admin maintenance routes."""
 
 from __future__ import annotations
 
@@ -19,13 +14,7 @@ logger = logging.getLogger(__name__)
 
 @router.post("/admin/drafts/purge-stale")
 async def purge_stale_drafts(request: Request):
-    """Delete unactioned GENERATED drafts older than *days* days.
-
-    Payload: ``{"days": 30}``  (default 30)
-
-    Prevents unbounded growth of the draft store for high-volume deployments
-    where not every generated draft is reviewed.
-    """
+    """Delete unactioned GENERATED drafts older than N days."""
     try:
         payload = await request.json()
     except Exception:

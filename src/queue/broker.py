@@ -1,32 +1,4 @@
-"""RabbitMQ / AMQP message broker for async webhook event processing.
-
-Architecture role
------------------
-DMZ Webhook Relay (HMAC-validates) → RabbitMQ Queue → Agent Service Consumer
-
-When ``QUEUE_ENABLED=true``:
-  * ``POST /webhook/jira`` validates the event, publishes to the queue, and
-    returns **202 Accepted** immediately (non-blocking for the caller).
-  * A background daemon thread consumes messages from the queue and runs the
-    full agent pipeline for each event.
-  * If the publish fails, the service falls back to synchronous processing.
-
-When ``QUEUE_ENABLED=false`` (default):
-  * All processing remains synchronous — no RabbitMQ dependency.
-
-Dependencies
-------------
-``pika`` is the AMQP client library (optional — install via extras).
-The broker degrades gracefully when ``pika`` is not installed or RabbitMQ
-is unreachable.
-
-Environment variables
----------------------
-QUEUE_ENABLED        Enable async queue processing (default ``false``).
-RABBITMQ_URL         AMQP connection URL (default ``amqp://guest:guest@localhost/``).
-QUEUE_NAME           Queue name (default ``jira_webhook_events``).
-QUEUE_PREFETCH_COUNT Consumer QoS prefetch count (default ``1``).
-"""
+"""RabbitMQ message broker for async webhook event processing."""
 
 from __future__ import annotations
 
@@ -39,17 +11,7 @@ logger = logging.getLogger(__name__)
 
 
 class MessageBroker:
-    """RabbitMQ broker wrapper with graceful degradation.
-
-    Parameters
-    ----------
-    url : str, optional
-        Override the ``RABBITMQ_URL`` env var.
-    queue_name : str, optional
-        Override the ``QUEUE_NAME`` env var.
-    prefetch_count : int, optional
-        Override the ``QUEUE_PREFETCH_COUNT`` env var.
-    """
+    """RabbitMQ broker wrapper with graceful degradation."""
 
     def __init__(
         self,
@@ -114,21 +76,7 @@ class MessageBroker:
     # Producer
 
     def publish(self, event_dict: dict) -> bool:
-        """Publish a webhook event payload to the queue.
-
-        The payload is JSON-serialised and sent as a persistent message.
-
-        Parameters
-        ----------
-        event_dict : dict
-            The raw webhook event payload dict.
-
-        Returns
-        -------
-        bool
-            ``True`` if published successfully; ``False`` if the queue is
-            unavailable or the publish failed.
-        """
+        """Publish event payload to the queue; returns True on success."""
         if not self._channel:
             return False
         try:
@@ -153,15 +101,7 @@ class MessageBroker:
     # Consumer
 
     def start_consumer(self, handler: Callable[[dict], None]) -> None:
-        """Start a daemon thread that consumes and processes events from the queue.
-
-        Parameters
-        ----------
-        handler : Callable[[dict], None]
-            Synchronous callback invoked with the deserialised event dict.
-            On success, the message is acknowledged.  On any exception the
-            message is nacked (dead-lettered, not re-queued).
-        """
+        """Start a daemon consumer thread that dispatches events to *handler*."""
         if not self._channel:
             logger.info(
                 "Queue consumer not started — RabbitMQ channel unavailable"

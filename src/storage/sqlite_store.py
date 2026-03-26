@@ -1,8 +1,4 @@
-"""SQLite-backed draft store.
-
-Provides persistent CRUD operations for drafts with full audit
-traceability.  Thread-safe via ``check_same_thread=False``.
-"""
+"""SQLite-backed draft store with audit traceability."""
 
 from __future__ import annotations
 
@@ -44,15 +40,7 @@ CREATE INDEX IF NOT EXISTS idx_drafts_created   ON drafts(created_at);
 
 
 class SQLiteDraftStore:
-    """Persistent draft store backed by SQLite.
-
-    Parameters
-    ----------
-    db_path : str
-        Path to the SQLite database file.  Parent directories are created
-        automatically.  Use ``":memory:"`` for an in-memory database
-        (useful in tests).
-    """
+    """Persistent draft store backed by SQLite."""
 
     def __init__(self, db_path: str = ".data/assistant.db") -> None:
         self._db_path = db_path
@@ -236,11 +224,7 @@ class SQLiteDraftStore:
         return True
 
     def update_body(self, draft_id: str, body: str) -> bool:
-        """Update the draft body (human-edited text).  Returns True if found.
-
-        ``original_body`` is intentionally left unchanged so the AI-generated
-        text is always preserved for RLHF analysis and edit-delta metrics.
-        """
+        """Update draft body text; preserves original_body.  Returns True if found."""
         result = self._conn.execute(
             "UPDATE drafts SET body = ? WHERE draft_id = ?",
             (body, draft_id),
@@ -272,20 +256,7 @@ class SQLiteDraftStore:
         limit: int = 20,
         days: int = 180,
     ) -> list[dict]:
-        """Return recent drafts for *issue_key* (newest first).
-
-        Used by :class:`~src.agent.duplicate_detector.DuplicateDetector` to
-        compare incoming comments against past replies on the same issue.
-
-        Parameters
-        ----------
-        issue_key:
-            Jira issue key to filter by.
-        limit:
-            Maximum rows to return.
-        days:
-            Only consider drafts created within this many days (default 180).
-        """
+        """Return recent drafts for *issue_key* (newest first)."""
         from datetime import timedelta
 
         cutoff = (
@@ -303,23 +274,7 @@ class SQLiteDraftStore:
         return [json.loads(r["data_json"]) for r in rows]
 
     def purge_stale(self, days: int = 30) -> int:
-        """Delete unactioned (still GENERATED) drafts older than *days* days.
-
-        This prevents unbounded growth of the draft store for installations
-        that receive high comment volume but do not always action every draft.
-
-        Parameters
-        ----------
-        days : int
-            Age threshold in calendar days.  Drafts with ``status = generated``
-            and ``created_at`` older than this many days will be deleted.
-            Defaults to 30.
-
-        Returns
-        -------
-        int
-            Number of rows deleted.
-        """
+        """Delete generated drafts older than *days* days; returns count deleted."""
         from datetime import timedelta
 
         cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
@@ -358,24 +313,7 @@ class SQLiteDraftStore:
         return self._db_path
 
     def save_rating(self, draft_id: str, rating: int) -> bool:
-        """Persist a human quality rating (1–5 stars) for a draft.
-
-        Parameters
-        ----------
-        draft_id : str
-        rating : int
-            Integer 1–5 (1 = very poor, 5 = excellent).
-
-        Returns
-        -------
-        bool
-            ``True`` if the draft was found and updated; ``False`` otherwise.
-
-        Raises
-        ------
-        ValueError
-            If *rating* is outside the 1–5 range.
-        """
+        """Save a 1–5 star rating for a draft.  Returns True if found."""
         if not (1 <= rating <= 5):
             raise ValueError(f"Rating must be 1–5, got {rating}")
 
@@ -396,15 +334,7 @@ class SQLiteDraftStore:
         return True
 
     def get_metrics(self) -> dict:
-        """Return aggregated draft quality and processing metrics.
-
-        Returns
-        -------
-        dict
-            Keys: ``total_drafts``, ``approved``, ``rejected``, ``pending``,
-            ``acceptance_rate_pct``, ``avg_confidence``, ``avg_rating``,
-            ``hallucination_flagged``, ``by_classification``.
-        """
+        """Return aggregated draft quality and processing metrics."""
         total = self.count()
         approved = self.count(status="approved")
         rejected = self.count(status="rejected")
@@ -482,6 +412,125 @@ class SQLiteDraftStore:
             "by_classification": by_classification,
         }
 
+    # Dashboard-specific queries
+
+    def get_daily_volume(self, days: int = 30) -> list[dict]:
+        """Return daily draft counts for the last *days* days.
+
+        Each entry: ``{"date": "2026-03-18", "total": 5, "approved": 3, "rejected": 1}``
+        """
+        from datetime import timedelta
+
+        cutoff = (
+            datetime.now(timezone.utc) - timedelta(days=days)
+        ).strftime("%Y-%m-%d")
+        rows = self._conn.execute(
+            """
+            SELECT
+                DATE(created_at) as dt,
+                COUNT(*)         as total,
+                SUM(CASE WHEN status = 'approved' THEN 1 ELSE 0 END) as approved,
+                SUM(CASE WHEN status = 'rejected' THEN 1 ELSE 0 END) as rejected
+            FROM drafts
+            WHERE DATE(created_at) >= ?
+            GROUP BY DATE(created_at)
+            ORDER BY dt
+            """,
+            (cutoff,),
+        ).fetchall()
+        return [
+            {
+                "date": r["dt"],
+                "total": r["total"],
+                "approved": r["approved"],
+                "rejected": r["rejected"],
+            }
+            for r in rows
+        ]
+
+    def get_severity_challenges(self, limit: int = 50) -> list[dict]:
+        """Return drafts that have a severity challenge attached.
+
+        Each entry is the full draft JSON with a non-null
+        ``severity_challenge`` field.
+        """
+        rows = self._conn.execute(
+            """
+            SELECT data_json FROM drafts
+            WHERE json_extract(data_json, '$.severity_challenge') IS NOT NULL
+            ORDER BY created_at DESC
+            LIMIT ?
+            """,
+            (limit,),
+        ).fetchall()
+        return [json.loads(r["data_json"]) for r in rows]
+
+    def get_top_issues(self, limit: int = 10) -> list[dict]:
+        """Return the most-active issue keys by draft count."""
+        rows = self._conn.execute(
+            """
+            SELECT issue_key, COUNT(*) as cnt,
+                   SUM(CASE WHEN status = 'approved' THEN 1 ELSE 0 END) as approved,
+                   AVG(confidence) as avg_conf
+            FROM drafts
+            GROUP BY issue_key
+            ORDER BY cnt DESC
+            LIMIT ?
+            """,
+            (limit,),
+        ).fetchall()
+        return [
+            {
+                "issue_key": r["issue_key"],
+                "count": r["cnt"],
+                "approved": r["approved"],
+                "avg_confidence": round(r["avg_conf"] or 0, 3),
+            }
+            for r in rows
+        ]
+
+    def get_repos_stats(self) -> dict[str, int]:
+        """Return PR-count per repo from drafts with ``repos_searched``."""
+        rows = self._conn.execute(
+            """
+            SELECT data_json FROM drafts
+            WHERE json_extract(data_json, '$.repos_searched') IS NOT NULL
+            """
+        ).fetchall()
+        repo_counts: dict[str, int] = {}
+        for r in rows:
+            data = json.loads(r["data_json"])
+            for repo in (data.get("repos_searched") or []):
+                repo_counts[repo] = repo_counts.get(repo, 0) + 1
+        return repo_counts
+
+    def get_avg_response_time_by_day(self, days: int = 30) -> list[dict]:
+        """Return average pipeline duration per day."""
+        from datetime import timedelta
+
+        cutoff = (
+            datetime.now(timezone.utc) - timedelta(days=days)
+        ).strftime("%Y-%m-%d")
+        rows = self._conn.execute(
+            """
+            SELECT
+                DATE(created_at) as dt,
+                AVG(json_extract(data_json, '$.pipeline_duration_ms')) as avg_ms
+            FROM drafts
+            WHERE DATE(created_at) >= ?
+            GROUP BY DATE(created_at)
+            ORDER BY dt
+            """,
+            (cutoff,),
+        ).fetchall()
+        return [
+            {
+                "date": r["dt"],
+                "avg_ms": round(r["avg_ms"] or 0, 1),
+            }
+            for r in rows
+        ]
+
 
 # Idempotency store
 
@@ -495,16 +544,7 @@ CREATE INDEX IF NOT EXISTS idx_seen_events_seen_at ON seen_events(seen_at);
 
 
 class SQLiteIdempotencyStore:
-    """Persistent event-ID deduplication store backed by SQLite.
-
-    Shared database with :class:`SQLiteDraftStore` when the same
-    ``db_path`` is supplied — no extra file needed.
-
-    Parameters
-    ----------
-    db_path : str
-        Path to the SQLite database file.  Use ``":memory:"`` for tests.
-    """
+    """Persistent event-ID deduplication store backed by SQLite."""
 
     def __init__(self, db_path: str = ".data/assistant.db") -> None:
         self._db_path = db_path

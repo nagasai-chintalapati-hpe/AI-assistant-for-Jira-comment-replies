@@ -1,8 +1,4 @@
-"""Webhook listener — POST /webhook/jira.
-
-Receives Jira webhook payloads, validates them, applies the EventFilter,
-then hands off to the Orchestrator (directly or via the message queue).
-"""
+"""Jira webhook listener."""
 
 from __future__ import annotations
 
@@ -22,34 +18,58 @@ router = APIRouter()
 logger = logging.getLogger(__name__)
 
 
+def _extract_adf_text(adf: dict) -> str:
+    """Extract plain text from Atlassian Document Format (ADF)."""
+    if not isinstance(adf, dict):
+        return str(adf)
+
+    parts: list[str] = []
+
+    # Text leaf node
+    if adf.get("type") == "text":
+        parts.append(adf.get("text", ""))
+
+    # Recurse into content array
+    for child in adf.get("content", []):
+        parts.append(_extract_adf_text(child))
+
+    text = "".join(parts)
+
+    # Add newlines for block-level elements
+    if adf.get("type") in ("paragraph", "heading", "bulletList", "orderedList", "listItem", "codeBlock"):
+        text = text.strip() + "\n"
+
+    return text
+
+
 @router.post("/webhook/jira")
 async def jira_webhook(request: Request):
-    """Receive a Jira webhook event and run it through the agent pipeline.
-
-    1. Rate-limit check (per client IP).
-    2. HMAC-SHA256 signature validation (``X-Hub-Signature`` header).
-    3. Parse + validate payload.
-    4. EventFilter — gates on issue type, status, trigger keywords, idempotency.
-    5. Hand off to the Orchestrator (queue or sync).
-    """
-    # 1. Rate limiting
+    """Receive a Jira webhook event and process it."""
     client_ip = request.client.host if request.client else "unknown"
     if not _rate_limiter.is_allowed(client_ip):
         raise HTTPException(
             status_code=429, detail="Rate limit exceeded — try again later"
         )
 
-    # 2. Signature validation
     body = await request.body()
     sig_header = request.headers.get("X-Hub-Signature")
     if not _verify_signature(body, sig_header):
         raise HTTPException(status_code=401, detail="Invalid webhook signature")
 
-    # 3. Parse
+    # Parse payload
     try:
         payload = _json.loads(body)
     except Exception:
         raise HTTPException(status_code=400, detail="Invalid JSON payload")
+
+    # Jira Cloud may send comment body as ADF (dict) instead of plain text —
+    # normalise it so the Pydantic model always gets a string.
+    _raw_comment = payload.get("comment")
+    if isinstance(_raw_comment, dict):
+        raw_body = _raw_comment.get("body")
+        if isinstance(raw_body, dict):
+            # ADF → extract plain text from content nodes
+            payload["comment"]["body"] = _extract_adf_text(raw_body)
 
     try:
         event = JiraWebhookEvent(**payload)

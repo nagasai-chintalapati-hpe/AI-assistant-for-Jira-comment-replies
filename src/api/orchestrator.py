@@ -1,15 +1,4 @@
-"""Orchestrator — runs the full agent pipeline for a Jira webhook event.
-
-The orchestrator ties together all pipeline stages:
-  Webhook Event
-    → Build Comment model
-    → Redact PII (redactor)
-    → Classify (CommentClassifier)
-    → Collect Context (ContextCollector + Tooling Layer)
-    → Draft (ResponseDrafter + LLM)
-    → Persist (SQLiteDraftStore)
-    → Notify (Teams / Email)
-"""
+"""Orchestrator — runs the full agent pipeline for a webhook event."""
 
 from __future__ import annotations
 
@@ -28,24 +17,23 @@ from src.api.deps import (
     _jira_client,
     _git_client,
     _s3_fetcher,
+    _jenkins_client,
+    _confluence_client,
+    _get_rag_engine,
 )
 from src.models.webhook import JiraWebhookEvent
 from src.models.comment import Comment
 from src.utils.redactor import redact_with_stats
 from src.agent.duplicate_detector import DuplicateDetector
+from src.agent.severity_challenger import SeverityChallenger
 
 logger = logging.getLogger(__name__)
 
 _duplicate_detector = DuplicateDetector()
+_severity_challenger = SeverityChallenger()
 
 
 def _sync_queue_handler(event_dict: dict) -> None:
-    """Synchronous queue consumer callback — called by the RabbitMQ daemon thread.
-
-    Deserialises the raw event dict, runs it through the full agent pipeline,
-    and logs the result.  Errors are propagated so the broker can nack the
-    message (preventing infinite re-delivery).
-    """
     event = JiraWebhookEvent(**event_dict)
     loop = asyncio.new_event_loop()
     try:
@@ -60,11 +48,7 @@ def _sync_queue_handler(event_dict: dict) -> None:
 
 
 async def _orchestrate(event: JiraWebhookEvent) -> dict:
-    """Orchestrator — runs the full agent pipeline for a comment event.
-
-    Matches the Orchestrator/Workflow Engine in the architecture diagram:
-      Comment → Classify → Context (Tooling Layer) → Draft (LLM) → Store
-    """
+    """Run the full agent pipeline for a comment event."""
     _pipeline_start = _t.monotonic()
 
     assert event.comment is not None
@@ -96,7 +80,7 @@ async def _orchestrate(event: JiraWebhookEvent) -> dict:
         body=event.comment.body,
     )
 
-    # 2. Redact PII from comment body before sending to Copilot LLM
+    # 2. Redact PII
     _redaction = redact_with_stats(comment.body)
     _redaction_count = _redaction.redaction_count
     if _redaction_count > 0:
@@ -130,6 +114,24 @@ async def _orchestrate(event: JiraWebhookEvent) -> dict:
     # 4c. Pattern detection — check for 3+ open issues on same component/version
     _pattern_note = _detect_pattern(context)
 
+    # 4d. Severity challenge — detect Rovo severity changes, counter-assess
+    _severity_result = _severity_challenger.evaluate(
+        context,
+        pattern_note=_pattern_note,
+        jira_client=_jira_client,
+    )
+    _severity_dict = _severity_result.to_dict() if _severity_result else None
+    if _severity_result and _severity_result.disagrees:
+        logger.warning(
+            "Severity challenge active on %s — Rovo set %s, evidence says %s",
+            comment.issue_key,
+            _severity_result.rovo_changes[-1].to_value,
+            _severity_result.recommended_severity,
+        )
+
+    # 4e. Multi-repo tracking (stashed by context collector)
+    _repos_searched = getattr(context, "_repos_searched", None)
+
     # 5. Draft response
     draft = drafter.draft(
         comment,
@@ -139,6 +141,8 @@ async def _orchestrate(event: JiraWebhookEvent) -> dict:
         pipeline_start_ms=_pipeline_start,
         similar_drafts=_dup_result.to_dict_list() or None,
         pattern_note=_pattern_note,
+        severity_challenge=_severity_dict,
+        repos_searched=_repos_searched,
     )
     logger.info(
         "Generated draft %s for %s (pipeline=%.0f ms, redactions=%d)",
@@ -151,13 +155,15 @@ async def _orchestrate(event: JiraWebhookEvent) -> dict:
     # 6. Store (persistent SQLite)
     draft_store.save(draft, classification=classification.comment_type.value)
 
-    # 7. Notify (Teams / Email — optional, fire-and-forget)
+    # 7. Notify human reviewers via Approval Service (Teams / Email) with draft details
     notifier.notify_draft_generated(
         draft_id=draft.draft_id,
         issue_key=comment.issue_key,
         classification=classification.comment_type.value,
         confidence=classification.confidence,
         body_preview=draft.body,
+        evidence_links=draft.citations,
+        missing_info=draft.missing_info,
     )
 
     return {
@@ -172,11 +178,7 @@ async def _orchestrate(event: JiraWebhookEvent) -> dict:
 
 
 def _detect_pattern(context) -> str | None:
-    """Return a pattern_note when 3+ open Jira issues share the same component/version.
-
-    Queries the live Jira API (via ``search_issues``) so the count is always
-    fresh.  Returns ``None`` when Jira is unconfigured or the count is < 3.
-    """
+    """Return a note when 3+ open issues share the same component/version."""
     if _jira_client is None:
         return None
 
@@ -227,13 +229,25 @@ def _collect_context_safe(issue_key: str):
     """Collect context via the Tooling Layer; return a minimal stub on failure."""
     try:
         from src.agent.context_collector import ContextCollector
+        from src.agent.pipeline_correlator import BuildPipelineCorrelator
+
+        _correlator = BuildPipelineCorrelator(
+            git_client=_git_client,
+            jenkins_client=_jenkins_client if _jenkins_client and _jenkins_client.enabled else None,
+            testrail_client=_testrail_client if _testrail_client and _testrail_client.enabled else None,
+            confluence_client=_confluence_client,
+        )
 
         collector = ContextCollector(
             jira_client=_jira_client,
+            rag_engine=_get_rag_engine(),
             log_lookup=_log_lookup,
             testrail_client=_testrail_client,
             git_client=_git_client,
-            s3_fetcher=_s3_fetcher if _s3_fetcher.enabled else None,
+            s3_fetcher=_s3_fetcher if _s3_fetcher and _s3_fetcher.enabled else None,
+            jenkins_client=_jenkins_client if _jenkins_client and _jenkins_client.enabled else None,
+            confluence_client=_confluence_client,
+            pipeline_correlator=_correlator if _correlator.enabled else None,
         )
         return collector.collect(issue_key)
     except Exception as exc:

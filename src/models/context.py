@@ -1,9 +1,4 @@
-"""Context collection data models.
-
-Captures all issue metadata, comment thread, attachments,
-Jenkins console-log links, RAG snippets, log entries,
-Git PR metadata, and ELK log entries gathered by the ContextCollector.
-"""
+"""Context collection data models."""
 
 from datetime import datetime
 from typing import Optional, Any
@@ -81,6 +76,13 @@ class ContextCollectionResult(BaseModel):
     git_prs: Optional[list[GitPRMetadata]] = None          
     elk_log_entries: Optional[list[LogEntry]] = None  
     s3_artifacts: Optional[list[dict[str, Any]]] = None  # S3 artifact metadata
+
+    testrail_marker_results: Optional[list[dict[str, Any]]] = None    # by-marker run summaries
+    confluence_citations: Optional[list[dict[str, str]]] = None       # Confluence citation dicts
+    jenkins_test_report: Optional[dict[str, Any]] = None              # parsed JUnit report
+    jenkins_console_errors: Optional[dict[str, Any]] = None           # structured error extraction
+    jenkins_build_info: Optional[list[dict[str, Any]]] = None         # full build metadata
+    pipeline_correlation: Optional[dict[str, Any]] = None             # cross-system correlation
 
     collection_timestamp: datetime
     collection_duration_ms: float

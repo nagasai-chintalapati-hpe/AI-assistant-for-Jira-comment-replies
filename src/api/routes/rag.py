@@ -1,16 +1,4 @@
-"""RAG pipeline routes — ingest, query, search, stats, delete.
-
-Endpoints
----------
-POST /rag/ingest/pdf          Upload + ingest a PDF
-POST /rag/ingest/text         Ingest raw text
-POST /rag/ingest/confluence   Ingest Confluence pages
-POST /rag/ingest/jira         Ingest resolved Jira tickets
-GET  /rag/search              Semantic search (query-param)
-POST /rag/query               Semantic search (JSON body)
-GET  /rag/stats               ChromaDB collection stats
-DELETE /rag/document/{title}  Remove document chunks
-"""
+"""RAG pipeline routes — ingest, query, search, stats, delete."""
 
 from __future__ import annotations
 
@@ -30,11 +18,7 @@ logger = logging.getLogger(__name__)
 
 @router.post("/rag/ingest/pdf")
 async def rag_ingest_pdf(file: UploadFile = File(...)):
-    """Upload and ingest a PDF into the RAG index.
-
-    The file is saved to the configured PDF upload directory, parsed,
-    chunked, and indexed into ChromaDB.
-    """
+    """Upload and ingest a PDF into the RAG index."""
     if not file.filename or not file.filename.lower().endswith(".pdf"):
         raise HTTPException(status_code=400, detail="Only .pdf files are accepted")
 
@@ -55,10 +39,7 @@ async def rag_ingest_pdf(file: UploadFile = File(...)):
 
 @router.post("/rag/ingest/text")
 async def rag_ingest_text(request: Request):
-    """Ingest raw text into the RAG index.
-
-    Payload: ``{"title": str, "text": str, "source_type": str, "url": str|null}``
-    """
+    """Ingest raw text into the RAG index."""
     try:
         payload = await request.json()
     except Exception:
@@ -92,10 +73,7 @@ async def rag_ingest_text(request: Request):
 
 @router.post("/rag/ingest/confluence")
 async def rag_ingest_confluence(request: Request):
-    """Ingest one or more Confluence pages into the RAG index.
-
-    Payload: ``{"page_ids": [str]}`` or ``{"space_key": str, "label": str|null}``
-    """
+    """Ingest Confluence pages into the RAG index."""
     try:
         payload = await request.json()
     except Exception:
@@ -146,15 +124,7 @@ async def rag_ingest_confluence(request: Request):
 
 @router.post("/rag/ingest/jira")
 async def rag_ingest_jira(request: Request):
-    """Ingest resolved Jira tickets as prior-defect RAG context.
-
-    Fetches Bug/Defect tickets with statuses Done/Resolved/Closed and indexes
-    them with ``source_type="jira"`` so they appear in prior-defect queries.
-
-    Payload (all optional)::
-
-        {"project_keys": ["PROJ"], "max_issues": 100, "statuses": ["Done"]}
-    """
+    """Ingest resolved Jira tickets into the RAG index."""
     if _jira_client is None:
         raise HTTPException(
             status_code=503,
@@ -190,10 +160,7 @@ async def rag_ingest_jira(request: Request):
 
 @router.get("/rag/search")
 async def rag_search(q: str, top_k: int = 5, source_type: Optional[str] = None):
-    """Search the RAG index for relevant document chunks.
-
-    Query params: ``?q=search+text&top_k=5&source_type=confluence``
-    """
+    """Search the RAG index for relevant chunks."""
     if not q.strip():
         raise HTTPException(status_code=400, detail="Query parameter 'q' is required")
 
@@ -220,12 +187,7 @@ async def rag_search(q: str, top_k: int = 5, source_type: Optional[str] = None):
 
 @router.post("/rag/query")
 async def rag_query(request: Request):
-    """Semantic search over the RAG index (POST variant of GET /rag/search).
-
-    Accepts a JSON body for richer query options::
-
-        {"query": "login timeout after firmware upgrade", "top_k": 5, "source_type": "confluence"}
-    """
+    """Semantic search over the RAG index (POST variant)."""
     try:
         payload = await request.json()
     except Exception:

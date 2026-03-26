@@ -1,9 +1,4 @@
-"""Webhook HMAC signature verification and per-IP rate limiting.
-
-These two concerns are co-located because they share the Redis connection:
-the rate limiter is Redis-backed when ``REDIS_ENABLED=true``, and Redis is
-the natural fit for distributed HMAC replay-attack prevention in the future.
-"""
+"""Webhook HMAC signature verification and per-IP rate limiting."""
 
 from __future__ import annotations
 
@@ -23,15 +18,7 @@ logger = logging.getLogger(__name__)
 
 
 def _verify_signature(body: bytes, signature_header: Optional[str]) -> bool:
-    """Verify the Jira webhook HMAC-SHA256 signature.
-
-    Returns ``True`` when:
-      * Signature validation is disabled (``VALIDATE_WEBHOOK_SIGNATURE=false``
-        or ``JIRA_WEBHOOK_SECRET`` not set)  — safe default for local dev.
-      * The computed HMAC matches the ``X-Hub-Signature`` header value.
-    Returns ``False`` when validation is enabled but the signature is missing
-    or doesn't match.
-    """
+    """Verify the Jira webhook HMAC-SHA256 signature."""
     if not settings.webhook.validate_signature or not settings.webhook.secret:
         return True
     if not signature_header:
@@ -49,15 +36,11 @@ def _verify_signature(body: bytes, signature_header: Optional[str]) -> bool:
     return hmac.compare_digest(expected, provided)
 
 
-# ── Per-IP rate limiter ───────────────────────────────────────────────────
+# Per-IP rate limiter
 
 
 class _RateLimiter:
-    """Per-IP rate limiter — Redis-backed when REDIS_ENABLED=true, else in-memory.
-
-    Redis mode uses a sorted-set sliding window (one key per client IP).
-    Falls back to an in-process ``defaultdict`` when Redis is unavailable.
-    """
+    """Per-IP rate limiter — Redis-backed or in-memory fallback."""
 
     def __init__(self, rpm: int = 60) -> None:
         self._rpm = rpm

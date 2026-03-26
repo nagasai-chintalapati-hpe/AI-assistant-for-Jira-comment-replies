@@ -1,33 +1,10 @@
-"""FastAPI application - Jira webhook listener + agent orchestration.
-
-Architecture flow:
-  Jira Cloud -> Webhook Listener -> Event Filter -> Orchestrator
-    (Classify -> Collect Context -> Draft -> Store -> Notify)
-  -> Approval Service -> Action Executor -> Jira
-
-Module layout
--------------
-security.py      - HMAC verification + RateLimiter class
-deps.py          - all singleton instances
-orchestrator.py  - _orchestrate pipeline + context collector
-routes/webhook.py  - POST /webhook/jira
-routes/drafts.py   - GET /drafts, POST /reject
-routes/rag.py      - all /rag/* endpoints
-routes/health.py   - /health, /health/deep, /metrics, /metrics/prometheus
-routes/admin.py    - /admin/drafts/purge-stale
-routes/ui.py       - /ui/* review pages
-
-NOTE: POST /approve lives here (not in routes/drafts.py) because the test
-suite patches src.api.app._jira_client via unittest.mock - patching works by
-replacing the name binding in the module where the handler is defined.
-"""
+"""FastAPI application — Jira webhook listener + agent orchestration."""
 
 from __future__ import annotations
 
 import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Optional
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.staticfiles import StaticFiles
@@ -55,6 +32,7 @@ from src.api.routes import rag as _rag_routes
 from src.api.routes import health as _health_routes
 from src.api.routes import admin as _admin_routes
 from src.api.routes import ui as _ui_routes
+from src.api.routes import dashboard as _dashboard_routes
 
 logger = logging.getLogger(__name__)
 
@@ -64,7 +42,7 @@ logger = logging.getLogger(__name__)
 
 @asynccontextmanager
 async def lifespan(app_instance: FastAPI):
-    """Application lifespan - startup / shutdown."""
+    """Startup / shutdown lifecycle."""
     channels = []
     if _teams.enabled:
         channels.append("Teams")
@@ -108,24 +86,15 @@ app.include_router(_rag_routes.router)
 app.include_router(_health_routes.router)
 app.include_router(_admin_routes.router)
 app.include_router(_ui_routes.router)
+app.include_router(_dashboard_routes.router)
 
 
-# Approval action executor
-# NOTE: This handler is intentionally defined here (not in routes/drafts.py).
-# Tests patch ``src.api.app._jira_client`` and Python mock patching works by
-# replacing the name binding in THIS module's __dict__. Moving the handler
-# to another module would silently break those patches.
+# POST /approve lives here (not routes/drafts.py) for mock-patching compatibility.
 
 
 @app.post("/approve")
 async def approve_draft(request: Request):
-    """Approve a draft - human-in-the-loop gate.
-
-    1. Mark draft APPROVED in store.
-    2. Action Executor: post comment to Jira (approved only).
-    3. Mark draft POSTED.
-    4. Notify via Approval Service (Teams / Email).
-    """
+    """Approve a draft and optionally post to Jira."""
     try:
         payload = await request.json()
         draft_id = payload.get("draft_id")

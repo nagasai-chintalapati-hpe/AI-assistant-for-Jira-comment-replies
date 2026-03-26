@@ -1,33 +1,4 @@
-"""Copilot LLM Client — unified interface for GitHub Copilot API and local LLM.
-
-Backends
---------
-copilot  — GitHub Copilot API via the OpenAI-compatible SDK.
-           Point COPILOT_BASE_URL at the Copilot API gateway (default:
-           https://api.githubcopilot.com).  Auth: COPILOT_API_KEY (GitHub
-           personal-access token with ``copilot`` scope, or an Azure API key).
-
-local    — llama.cpp / GGUF model running fully on-prem (zero network calls).
-           Set LLM_BACKEND=local and LLM_MODEL_PATH=/path/to/model.gguf.
-           GPU offload: LLM_N_GPU_LAYERS (0 = CPU only).
-
-Selection
----------
-LLM_BACKEND env var: "copilot" (default) | "local".
-Falls back to "copilot" when LLM_BACKEND=local but LLM_MODEL_PATH is missing.
-
-Usage
------
-    from src.llm.client import get_llm_client
-
-    llm = get_llm_client()
-    text = llm.complete(
-        messages=[
-            {"role": "system", "content": "You are a helpful QA engineer."},
-            {"role": "user", "content": "Summarise this bug comment …"},
-        ]
-    )
-"""
+"""Unified LLM client — GitHub Copilot API or local llama.cpp."""
 
 from __future__ import annotations
 
@@ -42,11 +13,7 @@ _COPILOT_DEFAULT_BASE_URL = "https://api.githubcopilot.com"
 
 
 class CopilotLLMClient:
-    """Unified LLM client — GitHub Copilot API and local llama.cpp.
-
-    Thread-safe: the underlying OpenAI client and llama.cpp Llama objects
-    are safe to call from multiple threads.
-    """
+    """LLM client supporting Copilot API and local llama.cpp."""
 
     def __init__(self) -> None:
         self._openai_client = None
@@ -139,23 +106,7 @@ class CopilotLLMClient:
         max_tokens: Optional[int] = None,
         temperature: Optional[float] = None,
     ) -> Optional[str]:
-        """Generate a chat completion.
-
-        Parameters
-        ----------
-        messages : list[dict]
-            Chat messages in OpenAI format:
-            ``[{"role": "system", "content": "…"}, {"role": "user", "content": "…"}]``
-        max_tokens : int | None
-            Override ``LLMConfig.max_tokens``.
-        temperature : float | None
-            Override ``LLMConfig.temperature``.
-
-        Returns
-        -------
-        str | None
-            Generated text, or ``None`` on failure / backend unavailable.
-        """
+        """Generate a chat completion. Returns text or None on failure."""
         _max = max_tokens or settings.llm.max_tokens
         _temp = temperature if temperature is not None else settings.llm.temperature
 
@@ -210,11 +161,7 @@ _singleton: Optional[CopilotLLMClient] = None
 
 
 def get_llm_client() -> CopilotLLMClient:
-    """Return the process-level :class:`CopilotLLMClient` singleton.
-
-    Creates the client on first call; subsequent calls return the cached
-    instance (no re-initialisation).
-    """
+    """Return the process-level LLM client singleton."""
     global _singleton
     if _singleton is None:
         _singleton = CopilotLLMClient()

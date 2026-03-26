@@ -1,10 +1,4 @@
-"""Draft retrieval and rejection routes.
-
-NOTE: POST /approve is intentionally absent from this module.
-It lives in app.py so that ``@patch("src.api.app._jira_client")`` in the
-test suite continues to work — Python mock patching replaces the name
-binding in the module where the handler is defined.
-"""
+"""Draft retrieval and rejection routes."""
 
 from __future__ import annotations
 

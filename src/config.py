@@ -1,8 +1,4 @@
-"""Centralised configuration for the Jira Comment Assistant.
-
-Reads from environment variables (or .env file via python-dotenv).
-All settings have safe defaults for local development / CI.
-"""
+"""Centralised configuration — reads from env vars / .env file."""
 
 from __future__ import annotations
 
@@ -49,7 +45,7 @@ class LLMConfig:
 
 @dataclass(frozen=True)
 class RAGConfig:
-    """RAG pipeline configuration."""
+    """RAG pipeline settings."""
 
     chroma_persist_dir: str = os.getenv("CHROMA_PERSIST_DIR", ".data/chroma")
     embedding_model: str = os.getenv("RAG_EMBEDDING_MODEL", "all-MiniLM-L6-v2")
@@ -61,7 +57,7 @@ class RAGConfig:
 
 @dataclass(frozen=True)
 class ConfluenceConfig:
-    """Confluence integration for RAG ingestion."""
+    """Confluence integration settings."""
 
     base_url: str = os.getenv("CONFLUENCE_BASE_URL", "")
     username: str = os.getenv("CONFLUENCE_USERNAME", "")
@@ -72,12 +68,7 @@ class ConfluenceConfig:
 
 @dataclass(frozen=True)
 class TestRailConfig:
-    """TestRail integration configuration.
-
-    Auth priority:
-      1. API key (production — stateless, no expiry)
-      2. Session cookie (dev/testing — fallback for SSO instances)
-    """
+    """TestRail integration settings."""
 
     base_url: str = os.getenv("TESTRAIL_BASE_URL", "")
     username: str = os.getenv("TESTRAIL_USERNAME", "")
@@ -89,18 +80,19 @@ class TestRailConfig:
 
 @dataclass(frozen=True)
 class GitConfig:
-    """Git provider integration (GitHub / GitLab / Bitbucket)."""
+    """Git provider settings (GitHub / GitLab / Bitbucket)."""
 
     provider: str = os.getenv("GIT_PROVIDER", "github")  # github | gitlab | bitbucket
     base_url: str = os.getenv("GIT_BASE_URL", "https://api.github.com")  # override for self-hosted
     token: str = os.getenv("GIT_TOKEN", "")
     owner: str = os.getenv("GIT_OWNER", "")  # org/user
     repo: str = os.getenv("GIT_REPO", "")   # default repo (optional)
+    repos: str = os.getenv("GIT_REPOS", "")  # comma-separated: morpheus-core,morpheus-ui,...
 
 
 @dataclass(frozen=True)
 class ELKConfig:
-    """Elasticsearch / OpenSearch log query configuration."""
+    """Elasticsearch / OpenSearch settings."""
 
     host: str = os.getenv("ELK_HOST", "")          # e.g. https://elk.internal:9200
     username: str = os.getenv("ELK_USERNAME", "")
@@ -113,7 +105,7 @@ class ELKConfig:
 
 @dataclass(frozen=True)
 class LogLookupConfig:
-    """Log lookup service configuration."""
+    """Log lookup service settings."""
 
     jenkins_base_url: str = os.getenv("JENKINS_BASE_URL", "")
     jenkins_username: str = os.getenv("JENKINS_USERNAME", "")
@@ -137,7 +129,7 @@ class NotificationConfig:
 
 @dataclass(frozen=True)
 class WebhookConfig:
-    """Jira webhook HMAC-SHA256 signature validation."""
+    """Webhook HMAC-SHA256 settings."""
 
     secret: str = os.getenv("JIRA_WEBHOOK_SECRET", "")
     # Set VALIDATE_WEBHOOK_SIGNATURE=true in production once the Jira webhook
@@ -149,7 +141,7 @@ class WebhookConfig:
 
 @dataclass(frozen=True)
 class RateLimitConfig:
-    """Per-IP rate limiting on the webhook endpoint."""
+    """Per-IP rate limiting settings."""
 
     enabled: bool = os.getenv("RATE_LIMIT_ENABLED", "true").lower() == "true"
     max_requests_per_minute: int = int(os.getenv("RATE_LIMIT_RPM", "60"))
@@ -157,7 +149,7 @@ class RateLimitConfig:
 
 @dataclass(frozen=True)
 class S3Config:
-    """S3 / MinIO artifact storage configuration."""
+    """S3 / MinIO artifact storage settings."""
 
     bucket: str = os.getenv("S3_BUCKET", "")
     endpoint_url: str = os.getenv("S3_ENDPOINT_URL", "")  # empty = AWS default
@@ -169,7 +161,7 @@ class S3Config:
 
 @dataclass(frozen=True)
 class RedisConfig:
-    """Redis configuration for distributed rate limiting and caching."""
+    """Redis settings."""
 
     enabled: bool = os.getenv("REDIS_ENABLED", "false").lower() == "true"
     host: str = os.getenv("REDIS_HOST", "localhost")
@@ -182,12 +174,21 @@ class RedisConfig:
 
 @dataclass(frozen=True)
 class QueueConfig:
-    """RabbitMQ / AMQP message queue configuration."""
+    """RabbitMQ / AMQP settings."""
 
     enabled: bool = os.getenv("QUEUE_ENABLED", "false").lower() == "true"
     url: str = os.getenv("RABBITMQ_URL", "amqp://guest:guest@localhost/")
     queue_name: str = os.getenv("QUEUE_NAME", "jira_webhook_events")
     prefetch_count: int = int(os.getenv("QUEUE_PREFETCH_COUNT", "1"))
+
+
+@dataclass(frozen=True)
+class DashboardConfig:
+    """Dashboard access control settings."""
+
+    token: str = os.getenv("DASHBOARD_TOKEN", "")  # empty = no auth required
+    cookie_name: str = "dash_token"
+    cookie_max_age: int = int(os.getenv("DASHBOARD_COOKIE_MAX_AGE", "86400"))  # 24 h
 
 
 @dataclass(frozen=True)
@@ -219,6 +220,7 @@ class Settings:
     s3: S3Config = field(default_factory=S3Config)
     redis: RedisConfig = field(default_factory=RedisConfig)
     queue: QueueConfig = field(default_factory=QueueConfig)
+    dashboard: DashboardConfig = field(default_factory=DashboardConfig)
 
 
 # Module-level singleton

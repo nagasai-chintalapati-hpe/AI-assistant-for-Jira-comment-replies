@@ -1,15 +1,8 @@
-"""Document ingestion pipeline — PDF, Confluence, and raw text.
-
-Handles text extraction, chunking, and indexing into the RAG engine.
-Chunking uses a sliding-window approach with configurable size and
-overlap (from ``RAGConfig``).
-"""
+"""Document ingestion pipeline — PDF, Confluence, and raw text."""
 
 from __future__ import annotations
 
-import hashlib
 import logging
-import os
 from pathlib import Path
 from typing import Optional
 
@@ -21,18 +14,7 @@ logger = logging.getLogger(__name__)
 
 
 class DocumentIngester:
-    """Extracts, chunks, and indexes documents into the RAG engine.
-
-    Parameters
-    ----------
-    rag_engine : RAGEngine
-        The RAG engine to ingest chunks into.
-    chunk_size : int | None
-        Character-level chunk size.  Defaults to ``settings.rag.chunk_size``.
-    chunk_overlap : int | None
-        Overlap between consecutive chunks.  Defaults to
-        ``settings.rag.chunk_overlap``.
-    """
+    """Extracts, chunks, and indexes documents into the RAG engine. """
 
     def __init__(
         self,
@@ -52,22 +34,6 @@ class DocumentIngester:
         source_title: Optional[str] = None,
         metadata: Optional[dict[str, str]] = None,
     ) -> int:
-        """Parse a PDF file and ingest its text into the RAG index.
-
-        Parameters
-        ----------
-        file_path : str
-            Path to the ``.pdf`` file.
-        source_title : str | None
-            Human-readable document title.  Defaults to the filename.
-        metadata : dict | None
-            Extra metadata to attach to every chunk (component, version, …).
-
-        Returns
-        -------
-        int
-            Number of chunks indexed.
-        """
         path = Path(file_path)
         if not path.exists():
             raise FileNotFoundError(f"PDF not found: {file_path}")
@@ -110,31 +76,7 @@ class DocumentIngester:
         max_issues: int = 100,
         statuses: Optional[list[str]] = None,
     ) -> int:
-        """Ingest resolved Jira tickets as prior-defect context for RAG.
-
-        Fetches resolved Bug/Defect tickets from the specified Jira projects,
-        extracts summary + description + resolution information, and indexes
-        them with ``source_type="jira"`` so they are available for prior-defect
-        queries in :meth:`src.agent.context_collector.ContextCollector._query_rag`.
-
-        Parameters
-        ----------
-        jira_client : JiraClient
-            Authenticated Jira client used to search and fetch issues.
-        project_keys : list[str] | None
-            Jira project keys to search (e.g. ``["PROJ", "INFRA"]``).
-            If *None* or empty, searches all projects.
-        max_issues : int
-            Maximum number of resolved tickets to ingest (default 100).
-        statuses : list[str] | None
-            Resolution statuses to include.  Defaults to
-            ``["Done", "Resolved", "Closed"]``.
-
-        Returns
-        -------
-        int
-            Total number of chunks indexed across all ingested issues.
-        """
+        """Ingest resolved Jira tickets as prior-defect context for RAG. """
         resolved_statuses = statuses or ["Done", "Resolved", "Closed"]
         status_jql = " OR ".join(f'status = "{s}"' for s in resolved_statuses)
 
@@ -201,27 +143,7 @@ class DocumentIngester:
         source_url: Optional[str] = None,
         metadata: Optional[dict[str, str]] = None,
     ) -> int:
-        """Chunk raw text and ingest into the RAG index.
-
-        Parameters
-        ----------
-        text : str
-            Full document text.
-        source_title : str
-            Human-readable title for the document.
-        source_type : str
-            Category — ``"pdf"``, ``"confluence"``, ``"runbook"``,
-            ``"known_issue"``, etc.
-        source_url : str | None
-            Optional URL back to the original document.
-        metadata : dict | None
-            Extra metadata to attach to every chunk.
-
-        Returns
-        -------
-        int
-            Number of chunks indexed.
-        """
+        """Chunk raw text and ingest into the RAG index."""
         if not text.strip():
             return 0
 
@@ -255,21 +177,7 @@ class DocumentIngester:
         page_id: str,
         confluence_client=None,
     ) -> int:
-        """Fetch a Confluence page and ingest its text content.
-
-        Parameters
-        ----------
-        page_id : str
-            Confluence page ID.
-        confluence_client : ConfluenceClient | None
-            Confluence client to use.  If None, a new one is created from
-            config.
-
-        Returns
-        -------
-        int
-            Number of chunks indexed.
-        """
+        """Fetch a Confluence page and ingest its text content. """
         if confluence_client is None:
             from src.integrations.confluence import ConfluenceClient
             confluence_client = ConfluenceClient()
@@ -300,17 +208,7 @@ class DocumentIngester:
     # Chunking
 
     def chunk_text(self, text: str) -> list[str]:
-        """Split *text* into overlapping chunks.
-
-        Uses a sliding window of ``chunk_size`` characters with
-        ``chunk_overlap`` overlap.  Tries to break at paragraph or
-        sentence boundaries when possible.
-
-        Returns
-        -------
-        list[str]
-            Ordered list of text chunks.
-        """
+        """Split *text* into overlapping chunks.  """
         if not text.strip():
             return []
 
@@ -359,7 +257,7 @@ class DocumentIngester:
 
     @staticmethod
     def extract_pdf_text(file_path: str) -> str:
-        """Extract all text from a PDF file (utility method)."""
+        """Extract all text from a PDF file."""
         from pypdf import PdfReader
 
         reader = PdfReader(file_path)

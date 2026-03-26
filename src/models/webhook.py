@@ -1,8 +1,22 @@
 """Webhook event models for Jira incoming payloads"""
 
-from datetime import datetime
-from typing import Optional, Any
-from pydantic import BaseModel, Field
+from typing import Optional, Any, Union
+from pydantic import BaseModel, Field, field_validator
+
+
+def _adf_to_text(adf: dict) -> str:
+    """Recursively extract plain text from ADF (Atlassian Document Format)."""
+    if not isinstance(adf, dict):
+        return str(adf)
+    parts: list[str] = []
+    if adf.get("type") == "text":
+        parts.append(adf.get("text", ""))
+    for child in adf.get("content", []):
+        parts.append(_adf_to_text(child))
+    text = "".join(parts)
+    if adf.get("type") in ("paragraph", "heading", "bulletList", "orderedList", "listItem", "codeBlock"):
+        text = text.strip() + "\n"
+    return text
 
 
 class WebhookUser(BaseModel):
@@ -16,10 +30,18 @@ class WebhookUser(BaseModel):
 class WebhookComment(BaseModel):
     """Comment section of a Jira webhook event"""
     id: str
-    body: str
+    body: Union[str, dict, Any] = ""
     author: WebhookUser
     created: str
     updated: str
+
+    @field_validator("body", mode="before")
+    @classmethod
+    def normalise_body(cls, v: Any) -> str:
+        """Accept ADF dict or plain string — always return a string."""
+        if isinstance(v, dict):
+            return _adf_to_text(v).strip()
+        return str(v) if v else ""
 
 
 class WebhookIssueFields(BaseModel):

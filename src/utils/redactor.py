@@ -1,35 +1,19 @@
-"""PII and secret redactor.
-
-Scrubs sensitive patterns from text *before* sending to the Copilot LLM
-or persisting in the audit log.  Applied to:
-
-  • Jira issue descriptions and comment bodies
-  • Log excerpts from Jenkins / ELK
-  • Any free-text field passed through the pipeline
-
-Patterns masked
----------------
-  Bearer / Authorization tokens  →  ``[REDACTED]``
-  Generic ``key=value`` secrets  →  ``[REDACTED]``
-  Basic-auth in URLs             →  ``[USER]:[REDACTED]@``
-  Email addresses                →  ``[EMAIL]``
-  Private IPv4 ranges            →  ``[PRIVATE_IP]``
-"""
+"""PII and secret redactor."""
 
 from __future__ import annotations
 
 import re
 from dataclasses import dataclass
 
-# Compiled patterns (ordered — most specific first)
+# Compiled patterns 
 
 _PATTERNS: list[tuple[re.Pattern, str]] = [
-    # Authorization: Bearer <token>
+    # Authorization
     (
         re.compile(r"(?i)(Authorization:\s*Bearer\s+)\S+"),
         r"\1[REDACTED]",
     ),
-    # Generic key=value / key: value secrets
+    #  key=value pairs 
     (
         re.compile(
             r"(?i)"
@@ -39,17 +23,14 @@ _PATTERNS: list[tuple[re.Pattern, str]] = [
         ),
         r"\1=[REDACTED]",
     ),
-    # Inline Basic-auth in URLs:  https://user:pass@host
     (
         re.compile(r"(?i)(https?://)([^:/@\s]+):([^@\s]+)@"),
         r"\1[USER]:[REDACTED]@",
     ),
-    # Email addresses
     (
         re.compile(r"\b[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}\b"),
         "[EMAIL]",
     ),
-    # Private IPv4 ranges  (10.x, 172.16-31.x, 192.168.x)
     (
         re.compile(
             r"\b(?:"
@@ -84,19 +65,7 @@ def redact(text: str) -> str:
 
 
 def redact_with_stats(text: str) -> RedactionResult:
-    """Redact *text* and return detailed statistics alongside the cleaned result.
-
-    Parameters
-    ----------
-    text : str
-        Raw text potentially containing PII or secrets.
-
-    Returns
-    -------
-    RedactionResult
-        ``text`` — redacted string.
-        ``redaction_count`` — total number of substitutions made.
-    """
+    """Redact *text* and return detailed statistics alongside the cleaned result."""
     original = text
     count = 0
     for pattern, replacement in _PATTERNS:

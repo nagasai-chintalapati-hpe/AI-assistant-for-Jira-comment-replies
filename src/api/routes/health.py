@@ -1,18 +1,9 @@
-"""Health check and metrics routes.
-
-Endpoints
----------
-GET /health             Lightweight in-process health check
-GET /health/deep        Live connectivity probe for every integration
-GET /metrics            JSON draft-quality metrics
-GET /metrics/prometheus Prometheus text-format metrics (requires prometheus-client)
-"""
+"""Health check and metrics routes."""
 
 from __future__ import annotations
 
 import logging
 from datetime import datetime, timezone
-from typing import TYPE_CHECKING
 
 from fastapi import APIRouter, HTTPException
 
@@ -38,7 +29,7 @@ logger = logging.getLogger(__name__)
 
 @router.get("/health")
 async def health_check():
-    """Lightweight health check — returns in-process state, no live probes."""
+    """Lightweight health check."""
     return {
         "status": "healthy",
         "timestamp": datetime.now(timezone.utc).isoformat(),
@@ -49,12 +40,15 @@ async def health_check():
             "email": _email.enabled,
         },
         "integrations": {
+            "jira": _jira_client is not None,
             "git": _git_client is not None,
-            "elk": _log_lookup.elk_enabled,
             "testrail": _testrail_client.enabled,
             "rag": _deps._rag_engine is not None,
-            "s3": _s3_fetcher.enabled,
+            "elk": _log_lookup.elk_enabled,
             "queue": _broker.enabled,
+        },
+        "optional": {
+            "s3": _s3_fetcher.enabled,
             "redis": _rate_limiter._redis is not None,
         },
     }
@@ -62,34 +56,13 @@ async def health_check():
 
 @router.get("/metrics")
 async def get_metrics():
-    """Return aggregated draft quality and processing metrics.
-
-    Response includes acceptance rate, average confidence, average human
-    rating, hallucination flag count, and breakdown by classification type.
-    """
+    """Return aggregated draft quality and processing metrics."""
     return draft_store.get_metrics()
 
 
 @router.get("/metrics/prometheus")
 async def get_metrics_prometheus():
-    """Expose metrics in Prometheus text format (for scraping by Prometheus / Grafana).
-
-    Requires ``prometheus-client`` to be installed (``pip install prometheus-client``).
-    Falls back to a 503 if the package is missing.
-
-    Exposes
-    -------
-    jira_assistant_drafts_total{status}
-    jira_assistant_acceptance_rate_pct
-    jira_assistant_avg_confidence
-    jira_assistant_avg_rating
-    jira_assistant_hallucination_flagged_total
-    jira_assistant_edited_drafts_total
-    jira_assistant_pct_approved_edited
-    jira_assistant_drafts_by_classification{classification}
-    jira_assistant_avg_pipeline_duration_ms
-    jira_assistant_total_redactions
-    """
+    """Expose metrics in Prometheus text format."""
     try:
         from prometheus_client import (
             CollectorRegistry,
@@ -185,15 +158,7 @@ async def get_metrics_prometheus():
 
 @router.get("/health/deep")
 async def deep_health_check():
-    """Deep health check — tests live connectivity to each enabled integration.
-
-    Unlike ``GET /health`` (which just checks in-process state), this endpoint
-    actually calls each configured back-end with a lightweight probe request.
-    Intended for readiness probes and monitoring dashboards.
-
-    Returns a per-integration ``status`` (``ok`` | ``degraded`` | ``disabled``)
-    and an aggregated ``overall`` field.
-    """
+    """Deep health check — tests live connectivity to each integration."""
     results: dict[str, dict] = {}
 
     # Jira

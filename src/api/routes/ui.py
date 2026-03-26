@@ -1,13 +1,4 @@
-"""Draft Review UI routes — server-rendered Jinja2 pages.
-
-Endpoints
----------
-GET  /ui                           Draft list page
-GET  /ui/drafts/{id}               Draft review page
-POST /ui/drafts/{id}/approve       Approve form submission (post to Jira)
-POST /ui/drafts/{id}/reject        Reject form submission
-POST /ui/drafts/{id}/rate          Rate draft quality (1–5)
-"""
+"""Draft Review UI routes."""
 
 from __future__ import annotations
 
@@ -16,7 +7,7 @@ from pathlib import Path
 from typing import Optional
 
 from fastapi import APIRouter, Form, HTTPException, Request
-from fastapi.responses import RedirectResponse
+from fastapi.responses import RedirectResponse, JSONResponse
 from fastapi.templating import Jinja2Templates
 
 from src.api.deps import draft_store, _jira_client
@@ -118,12 +109,17 @@ async def ui_reject(
     return RedirectResponse(url=f"/ui/drafts/{draft_id}", status_code=303)
 
 
+@router.post("/ui/clear-all")
+async def ui_clear_all(request: Request):
+    """Delete every draft from the local database."""
+    deleted = draft_store.clear()
+    logger.info("Cleared all drafts from UI — %d removed", deleted)
+    return RedirectResponse(url="/ui", status_code=303)
+
+
 @router.post("/ui/drafts/{draft_id}/rate")
 async def rate_draft(draft_id: str, request: Request):
-    """Rate a draft response with a 1–5 star quality score.
-
-    Request body: ``{"rating": <int 1-5>}``
-    """
+    """Rate a draft (1–5 stars)."""
     try:
         payload = await request.json()
         rating = payload.get("rating")
@@ -140,3 +136,25 @@ async def rate_draft(draft_id: str, request: Request):
     except Exception as exc:
         logger.error("Error rating draft %s: %s", draft_id, exc)
         raise HTTPException(status_code=500, detail="Failed to rate draft")
+
+
+# Polling endpoints for auto-refresh
+
+@router.get("/ui/api/drafts")
+async def ui_api_drafts(
+    issue_key: Optional[str] = None,
+    status: Optional[str] = None,
+):
+    """JSON endpoint for draft list polling (auto-refresh)."""
+    drafts = draft_store.list_all(issue_key=issue_key, status=status, limit=100)
+    total = draft_store.count(issue_key=issue_key, status=status)
+    return JSONResponse({"drafts": drafts, "total": total})
+
+
+@router.get("/ui/api/drafts/{draft_id}")
+async def ui_api_draft_detail(draft_id: str):
+    """JSON endpoint for single-draft polling (auto-refresh review page)."""
+    draft = draft_store.get(draft_id)
+    if draft is None:
+        raise HTTPException(status_code=404, detail="Draft not found")
+    return JSONResponse(draft)
