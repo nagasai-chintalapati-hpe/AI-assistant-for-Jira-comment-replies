@@ -1,25 +1,12 @@
-"""Duplicate draft detection.
+"""Duplicate detector — finds similar past drafts on the same issue."""
 
-Before generating a new draft, scan past drafts on the same Jira issue
-for word-overlap similarity.  Similar drafts are surfaced in the review
-UI as a warning banner: "You may have already replied to this."
-
-Algorithm
----------
-Jaccard token similarity between the incoming comment body and the body
-of each past draft on the same issue_key.  This is intentionally simple
-(no vector embeddings required) and fast for the typical volume of
-comments per issue.
-
-Threshold: 0.25 by default — roughly 1 in 4 meaningful words overlap.
-"""
 
 from __future__ import annotations
 
 import logging
 import re
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from src.storage.sqlite_store import SQLiteDraftStore
@@ -67,10 +54,6 @@ class DuplicateCheckResult:
             for s in self.similar_drafts
         ]
 
-
-# ── Helpers ───────────────────────────────────────────────────────────────
-
-
 def _tokenize(text: str) -> set[str]:
     """Return a set of lowercase word tokens (min 3 chars, letters only)."""
     return set(re.findall(r"\b[a-z]{3,}\b", text.lower()))
@@ -81,10 +64,6 @@ def _jaccard(a: set, b: set) -> float:
     if not a or not b:
         return 0.0
     return len(a & b) / len(a | b)
-
-
-# ── Main class ────────────────────────────────────────────────────────────
-
 
 class DuplicateDetector:
     """Check whether a new comment looks like a question already answered."""
@@ -99,19 +78,7 @@ class DuplicateDetector:
         draft_store: "SQLiteDraftStore",
         limit: int = 3,
     ) -> DuplicateCheckResult:
-        """Return past drafts on *issue_key* that overlap with *comment_body*.
-
-        Parameters
-        ----------
-        comment_body:
-            The (already PII-redacted) incoming comment text.
-        issue_key:
-            Jira issue key — only drafts on the same issue are compared.
-        draft_store:
-            Live ``SQLiteDraftStore`` instance.
-        limit:
-            Maximum number of similar drafts to surface (highest first).
-        """
+        """Return past drafts on *issue_key* that overlap with *comment_body*. """
         past = draft_store.find_recent_by_issue(issue_key, limit=20)
         if not past:
             return DuplicateCheckResult()
@@ -120,9 +87,13 @@ class DuplicateDetector:
         hits: list[SimilarDraft] = []
 
         for d in past:
-            body = d.get("body", "")
-            sim = _jaccard(comment_tokens, _tokenize(body))
+            # Prefer comparing against the original triggering comment
+            # (comment-to-comment is much more accurate than comment-to-draft
+            # because draft bodies are long templates that dilute Jaccard scores).
+            compare_text = d.get("trigger_comment_body") or d.get("body", "")
+            sim = _jaccard(comment_tokens, _tokenize(compare_text))
             if sim >= self._threshold:
+                body = d.get("body", "")
                 hits.append(
                     SimilarDraft(
                         draft_id=d.get("draft_id", ""),

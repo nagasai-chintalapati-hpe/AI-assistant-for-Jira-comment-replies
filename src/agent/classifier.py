@@ -1,4 +1,4 @@
-"""Comment classifier – determines comment intent."""
+"""Comment classifier — determines comment intent."""
 
 from __future__ import annotations
 import json
@@ -95,20 +95,9 @@ Respond ONLY with valid JSON – no markdown, no explanation:
 """
 
 class CommentClassifier:
-    """Classifies developer comments into predefined types.
-
-    Attempts Copilot SDK-based classification first; falls back to keyword rules.
-    """
+    """Classifies comments via Copilot SDK with keyword fallback."""
 
     def __init__(self, llm_client=None, api_key: Optional[str] = None, model: str = "gpt-4"):
-        """
-        Args:
-            llm_client: :class:`~src.llm.client.CopilotLLMClient` instance.
-                        If *None*, the module-level singleton is used.
-                        Pass a disabled client for keyword-only mode (CI / tests).
-            api_key:    Deprecated — kept for backward compatibility only.
-            model:      Deprecated — kept for backward compatibility only.
-        """
         if llm_client is None:
             from src.llm.client import get_llm_client
             llm_client = get_llm_client()
