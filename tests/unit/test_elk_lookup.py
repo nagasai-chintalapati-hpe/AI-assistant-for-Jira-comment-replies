@@ -10,7 +10,7 @@ from src.integrations.log_lookup import LogLookupService
 from src.models.rag import LogEntry
 
 
-# ── Fixtures ──────────────────────────────────────────────────────────────────
+# Fixtures
 
 ELK_RESPONSE = {
     "hits": {
@@ -55,7 +55,7 @@ def _make_service(elk_host="http://elk.internal:9200", username="admin", passwor
     )
 
 
-# ── elk_enabled ───────────────────────────────────────────────────────────────
+# elk_enabled
 
 def test_elk_enabled_with_basic_auth():
     svc = _make_service()
@@ -73,11 +73,11 @@ def test_elk_disabled_when_no_host():
 
 
 def test_elk_disabled_when_no_auth():
-    svc = LogLookupService(elk_host="http://elk:9200")
+    svc = LogLookupService(elk_host="http://elk:9200", elk_username="", elk_password="", elk_api_key="")
     assert svc.elk_enabled is False
 
 
-# ── search_elk_logs — happy path ──────────────────────────────────────────────
+# search_elk_logs — happy path
 
 def test_search_elk_logs_returns_entries():
     svc = _make_service()
@@ -151,7 +151,7 @@ def test_search_elk_logs_empty_result():
     assert entries == []
 
 
-# ── search_elk_logs — disabled ────────────────────────────────────────────────
+# search_elk_logs — disabled
 
 def test_search_elk_logs_disabled_returns_empty():
     svc = LogLookupService(elk_host="", elk_username="admin", elk_password="secret")
@@ -159,7 +159,7 @@ def test_search_elk_logs_disabled_returns_empty():
     assert entries == []
 
 
-# ── search_elk_logs — filters ─────────────────────────────────────────────────
+# search_elk_logs — filters
 
 def test_search_elk_logs_passes_build_id_filter():
     svc = _make_service()
@@ -265,7 +265,7 @@ def test_search_elk_logs_custom_max_entries():
     assert captured_body["size"] == 10
 
 
-# ── search_elk_logs — error handling ─────────────────────────────────────────
+# search_elk_logs — error handling
 
 def test_search_elk_logs_returns_empty_on_http_error():
     svc = _make_service()
@@ -279,7 +279,7 @@ def test_search_elk_logs_returns_empty_on_http_error():
     assert entries == []
 
 
-# ── auth headers ─────────────────────────────────────────────────────────────
+# auth headers
 
 def test_elk_auth_headers_basic():
     import base64
@@ -308,11 +308,11 @@ def test_elk_auth_headers_api_key_takes_precedence():
 
 
 def test_elk_auth_headers_empty_when_no_auth():
-    svc = LogLookupService(elk_host="http://elk:9200")
+    svc = LogLookupService(elk_host="http://elk:9200", elk_username="", elk_password="", elk_api_key="")
     assert svc._elk_auth_headers() == {}
 
 
-# ── _build_elk_query structure ────────────────────────────────────────────────
+# _build_elk_query structure
 
 def test_build_elk_query_structure():
     query = LogLookupService._build_elk_query(
@@ -347,7 +347,7 @@ def test_build_elk_query_with_all_filters():
     assert len(must) == 5
 
 
-# ── _parse_elk_response — edge cases ─────────────────────────────────────────
+# _parse_elk_response — edge cases
 
 def test_parse_elk_response_skips_empty_message():
     """Hits with no message field should be skipped."""

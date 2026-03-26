@@ -1,13 +1,26 @@
 """Webhook event models for Jira incoming payloads"""
 
-from typing import Any, Optional
+from typing import Optional, Any, Union
+from pydantic import BaseModel, Field, field_validator
 
-from pydantic import BaseModel
+
+def _adf_to_text(adf: dict) -> str:
+    """Recursively extract plain text from ADF (Atlassian Document Format)."""
+    if not isinstance(adf, dict):
+        return str(adf)
+    parts: list[str] = []
+    if adf.get("type") == "text":
+        parts.append(adf.get("text", ""))
+    for child in adf.get("content", []):
+        parts.append(_adf_to_text(child))
+    text = "".join(parts)
+    if adf.get("type") in ("paragraph", "heading", "bulletList", "orderedList", "listItem", "codeBlock"):
+        text = text.strip() + "\n"
+    return text
 
 
 class WebhookUser(BaseModel):
     """Jira user from webhook payload"""
-
     accountId: Optional[str] = None
     displayName: Optional[str] = None
     emailAddress: Optional[str] = None
@@ -16,17 +29,23 @@ class WebhookUser(BaseModel):
 
 class WebhookComment(BaseModel):
     """Comment section of a Jira webhook event"""
-
     id: str
-    body: str
+    body: Union[str, dict, Any] = ""
     author: WebhookUser
     created: str
     updated: str
 
+    @field_validator("body", mode="before")
+    @classmethod
+    def normalise_body(cls, v: Any) -> str:
+        """Accept ADF dict or plain string — always return a string."""
+        if isinstance(v, dict):
+            return _adf_to_text(v).strip()
+        return str(v) if v else ""
+
 
 class WebhookIssueFields(BaseModel):
     """Subset of issue fields from webhook payload"""
-
     summary: Optional[str] = None
     issuetype: Optional[dict[str, Any]] = None
     status: Optional[dict[str, Any]] = None
@@ -49,7 +68,6 @@ class JiraWebhookEvent(BaseModel):
     Jira sends different shapes depending on the event type.
     We normalise the pieces we care about.
     """
-
     webhookEvent: str
     timestamp: Optional[int] = None
     issue: Optional[WebhookIssue] = None

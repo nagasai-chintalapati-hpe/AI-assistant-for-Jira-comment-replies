@@ -1,0 +1,86 @@
+{% extends "UI.html" %}
+{% block title %}Drafts — Jira Comment Assistant{% endblock %}
+
+{% block content %}
+
+<!-- Header -->
+<div class="page-header">
+  <h4>Draft Replies</h4>
+  <div class="d-flex align-items-center gap-2">
+    <span class="badge total-badge">{{ total }} total</span>
+    {% if total > 0 %}
+    <button id="clearAllBtn" class="btn btn-sm btn-outline-danger" data-total="{{ total }}">Clear All</button>
+    {% endif %}
+  </div>
+</div>
+
+<form id="clearForm" method="post" action="/ui/clear-all" class="d-none"></form>
+
+<!-- Filters -->
+<div class="filter-bar">
+  <form method="get" action="/ui" class="row g-2 align-items-end">
+    <div class="col-auto">
+      <label class="form-label small mb-1">Issue Key</label>
+      <input type="text" name="issue_key" class="form-control form-control-sm"
+             placeholder="e.g. IP-7" value="{{ filters.issue_key or '' }}">
+    </div>
+    <div class="col-auto">
+      <label class="form-label small mb-1">Status</label>
+      <select name="status" class="form-select form-select-sm">
+        <option value="">All</option>
+        {% for s in ['generated','approved','rejected','posted'] %}
+        <option value="{{ s }}" {% if filters.status == s %}selected{% endif %}>{{ s|title }}</option>
+        {% endfor %}
+      </select>
+    </div>
+    <div class="col-auto d-flex gap-1">
+      <button type="submit" class="btn btn-sm btn-outline-primary">Filter</button>
+      <a href="/ui" class="btn btn-sm btn-outline-secondary">Clear</a>
+    </div>
+  </form>
+</div>
+
+<!-- Draft List -->
+{% if drafts %}
+<div class="list-group" id="draftList">
+  {% for d in drafts %}
+  <a href="/ui/drafts/{{ d.draft_id }}" class="list-group-item list-group-item-action draft-status-{{ d.status }}">
+    <div class="draft-item">
+      <div class="draft-content">
+        <div class="d-flex justify-content-between align-items-start">
+          <div class="d-flex align-items-center gap-2 flex-wrap">
+            <span class="issue-key">{{ d.issue_key }}</span>
+            <span class="badge {% if d.status == 'generated' %}bg-warning text-dark{% elif d.status in ['approved','posted'] %}bg-success{% elif d.status == 'rejected' %}bg-danger{% else %}bg-secondary{% endif %}">
+              {{ d.status }}
+            </span>
+            {% if d.classification_type %}
+            <span class="badge bg-light text-dark border">{{ d.classification_type | replace('_',' ') }}</span>
+            {% endif %}
+          </div>
+          <small class="text-muted text-nowrap">{{ d.created_at[:16] if d.created_at else '' }}</small>
+        </div>
+        <p class="draft-preview">{{ d.body[:140] if d.body else '(empty)' }}…</p>
+        <div class="d-flex align-items-center gap-2 flex-wrap">
+          {% if d.confidence_score %}
+          <span class="confidence-pill">{{ "%.0f"|format(d.confidence_score * 100) }}%</span>
+          {% endif %}
+          {% if d.citations %}
+          <span class="badge bg-info text-dark font-xs">{{ d.citations|length }} citation{{ 's' if d.citations|length != 1 }}</span>
+          {% endif %}
+          {% if d.pipeline_duration_ms %}
+          <span class="badge bg-light text-dark border font-xxs">{{ "%.1f"|format(d.pipeline_duration_ms / 1000) }}s</span>
+          {% endif %}
+        </div>
+      </div>
+    </div>
+  </a>
+  {% endfor %}
+</div>
+{% else %}
+<div class="empty-state" id="emptyState">
+  <p>No drafts found</p>
+  <small>Fire a Jira webhook to generate your first draft reply.</small>
+</div>
+{% endif %}
+
+{% endblock %}

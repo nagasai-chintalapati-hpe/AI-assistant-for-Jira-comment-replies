@@ -1,8 +1,4 @@
-"""Tests for the RAG engine — ChromaDB-backed semantic retrieval.
-
-Uses a real ChromaDB PersistentClient in a temp directory with real
-sentence-transformer embeddings.  No mocks for local dependencies.
-"""
+"""Tests for RAG engine — ChromaDB-backed semantic retrieval."""
 
 import pytest
 from unittest.mock import patch

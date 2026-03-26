@@ -1,9 +1,4 @@
-"""ChromaDB-backed RAG engine for semantic retrieval.
-
-Provides document chunk storage and retrieval using ChromaDB with
-sentence-transformer embeddings.  All configuration is read from
-``RAGConfig`` (see ``src/config.py``).
-"""
+"""ChromaDB-backed RAG engine for semantic retrieval."""
 
 from __future__ import annotations
 
@@ -24,18 +19,7 @@ _COLLECTION_NAME = "jira_assistant_docs"
 
 
 class RAGEngine:
-    """Semantic search engine backed by ChromaDB.
-
-    Parameters
-    ----------
-    persist_dir : str | None
-        Directory for ChromaDB persistence.  Defaults to
-        ``settings.rag.chroma_persist_dir``.  Pass ``None`` for an
-        ephemeral (in-memory) collection — useful for tests.
-    collection_name : str
-        Name of the ChromaDB collection.
-    """
-
+    """Semantic search engine backed by ChromaDB. """
     def __init__(
         self,
         persist_dir: Optional[str] = None,
@@ -82,11 +66,7 @@ class RAGEngine:
     # Ingest
 
     def add_chunks(self, chunks: list[DocumentChunk]) -> int:
-        """Add document chunks to the vector index.
-
-        Returns the number of chunks actually inserted (skips duplicates
-        by ``chunk_id``).
-        """
+        """Add document chunks to the vector index; returns count inserted."""
         if not chunks:
             return 0
 
@@ -123,22 +103,7 @@ class RAGEngine:
         top_k: Optional[int] = None,
         source_type: Optional[str] = None,
     ) -> RAGResult:
-        """Retrieve the most relevant chunks for *text*.
-
-        Parameters
-        ----------
-        text : str
-            The natural-language query.
-        top_k : int | None
-            Number of results to return.  Defaults to ``settings.rag.top_k``.
-        source_type : str | None
-            Optional filter — only return chunks from this source type.
-
-        Returns
-        -------
-        RAGResult
-            Aggregated retrieval result with ranked snippets.
-        """
+        """Retrieve the most relevant chunks for *text*.     """
         k = top_k or settings.rag.top_k
         where_filter = {"source_type": source_type} if source_type else None
 
@@ -172,7 +137,6 @@ class RAGEngine:
                         } or None,
                     )
                 )
-
         return RAGResult(
             query=text,
             snippets=snippets,
@@ -183,10 +147,7 @@ class RAGEngine:
     # Delete
 
     def delete_by_source(self, source_title: str) -> int:
-        """Remove all chunks whose ``source_title`` matches.
-
-        Returns the number of chunks deleted.
-        """
+        """Remove all chunks matching *source_title*; returns count deleted."""
         # Get matching IDs first
         existing = self._collection.get(
             where={"source_title": source_title},

@@ -1,0 +1,62 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>{% block title %}Jira Comment Assistant{% endblock %}</title>
+  <link rel="icon" type="image/jpeg" href="/static/images/hpe%20logo.jpg">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css"
+        integrity="sha384-T3c6CoIi6uLrA9TneNEoa7RxnatzjcDSCmG1MXxSR1GAsXEV/Dwwykc2MPK8M2HN"
+        crossorigin="anonymous">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css">
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+
+  <!-- Navbar -->
+  <nav class="navbar hpe-navbar">
+    <a class="navbar-brand" href="/ui">
+      <img src="/static/images/hpe%20logo.jpg" alt="HPE" class="hpe-logo">
+      <span>Jira Comment Assistant</span>
+    </a>
+    <div class="navbar-end">
+      <a href="/ui" class="nav-link-custom">Drafts</a>
+      <a href="/dashboard" class="nav-link-custom">Dashboard</a>
+      <span class="nav-tagline d-none d-md-inline">AI Assistant</span>
+      <button id="themeToggle" class="theme-toggle-btn" title="Toggle theme">Dark</button>
+    </div>
+  </nav>
+
+  <!-- Content -->
+  <main class="page-wrapper">
+    <div class="container py-4">
+      {% block content %}{% endblock %}
+    </div>
+  </main>
+
+  <!-- Footer -->
+  <footer class="hpe-footer">
+    <div class="container d-flex flex-wrap align-items-center justify-content-between gap-2">
+      <div class="d-flex align-items-center gap-2">
+        <img src="/static/images/hpe%20logo.jpg" alt="HPE" class="footer-logo">
+        <span>&copy; 2026 Hewlett Packard Enterprise</span>
+      </div>
+      <span>Built by <span class="footer-names">Nagasai Chintalapati</span>, <span class="footer-names">Yousef Konswah</span> &amp; <span class="footer-names">Vinnarasu Ganesan</span></span>
+      <div class="d-flex align-items-center gap-2">
+        <a href="https://github.com/nagasai-chintalapati-hpe/AI-assistant-for-Jira-comment-replies" target="_blank" class="footer-github-link">
+          <i class="bi bi-github"></i> GitHub
+        </a>
+        <span>&middot;</span>
+        <a href="/docs">API Docs</a>
+        <span>&middot;</span>
+        <a href="/health">Health</a>
+      </div>
+    </div>
+  </footer>
+
+  <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"
+          integrity="sha384-C6RzsynM9kWDrMNeT87bh95OGNyZPhcTNXj1NW7RuBCsyN/o0jlpcV8Qyq46cDfL"
+          crossorigin="anonymous"></script>
+  <script src="/static/app.js"></script>
+</body>
+</html>

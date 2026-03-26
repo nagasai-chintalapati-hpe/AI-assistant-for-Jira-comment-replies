@@ -1,0 +1,251 @@
+{% extends "UI.html" %}
+{% block title %}Dashboard — Jira Comment Assistant{% endblock %}
+
+{% block content %}
+
+<!-- Dashboard Header -->
+<div class="page-header">
+  <h4><i class="bi bi-bar-chart-line"></i>Dashboard</h4>
+  <div class="d-flex align-items-center gap-2">
+    <button class="btn btn-sm btn-outline-secondary" onclick="window.location.href='/ui'">
+      <i class="bi bi-arrow-left"></i> Draft Review
+    </button>
+    <button class="btn btn-sm btn-outline-primary" id="refreshBtn" onclick="refreshDashboard()">
+      <i class="bi bi-arrow-clockwise"></i> Refresh
+    </button>
+    <a href="/dashboard/logout" class="btn btn-sm btn-outline-danger" title="Lock dashboard">
+      <i class="bi bi-lock"></i> Logout
+    </a>
+  </div>
+</div>
+
+<!-- KPI Cards Row -->
+<div class="row g-3 mb-4" id="kpiCards">
+  <div class="col-6 col-md-3">
+    <div class="card kpi-card">
+      <div class="card-body text-center py-3">
+        <div class="kpi-value hpe-accent" id="kpiTotal">{{ metrics.total_drafts }}</div>
+        <div class="kpi-label">Total Drafts</div>
+      </div>
+    </div>
+  </div>
+  <div class="col-6 col-md-3">
+    <div class="card kpi-card">
+      <div class="card-body text-center py-3">
+        <div class="kpi-value text-success" id="kpiAcceptance">{{ "%.1f"|format(metrics.acceptance_rate_pct) }}%</div>
+        <div class="kpi-label">Acceptance Rate</div>
+      </div>
+    </div>
+  </div>
+  <div class="col-6 col-md-3">
+    <div class="card kpi-card">
+      <div class="card-body text-center py-3">
+        <div class="kpi-value text-teal" id="kpiTimeSaved">—</div>
+        <div class="kpi-label">Hours Saved</div>
+      </div>
+    </div>
+  </div>
+  <div class="col-6 col-md-3">
+    <div class="card kpi-card">
+      <div class="card-body text-center py-3">
+        <div class="kpi-value text-warning" id="kpiPending">{{ metrics.pending }}</div>
+        <div class="kpi-label">Pending Review</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Second KPI Row -->
+<div class="row g-3 mb-4">
+  <div class="col-6 col-md-3">
+    <div class="card kpi-card">
+      <div class="card-body text-center py-3">
+        <div class="kpi-value" id="kpiAvgConf">{{ "%.0f"|format((metrics.avg_confidence or 0) * 100) }}%</div>
+        <div class="kpi-label">Avg Confidence</div>
+      </div>
+    </div>
+  </div>
+  <div class="col-6 col-md-3">
+    <div class="card kpi-card">
+      <div class="card-body text-center py-3">
+        <div class="kpi-value" id="kpiAvgRating">{{ "%.1f"|format(metrics.avg_rating or 0) }}/5</div>
+        <div class="kpi-label">Avg Rating</div>
+      </div>
+    </div>
+  </div>
+  <div class="col-6 col-md-3">
+    <div class="card kpi-card">
+      <div class="card-body text-center py-3">
+        <div class="kpi-value text-danger" id="kpiHallucinations">{{ metrics.hallucination_flagged }}</div>
+        <div class="kpi-label">Hallucinations</div>
+      </div>
+    </div>
+  </div>
+  <div class="col-6 col-md-3">
+    <div class="card kpi-card">
+      <div class="card-body text-center py-3">
+        <div class="kpi-value text-danger" id="kpiRovoOverrides">—</div>
+        <div class="kpi-label">Rovo Overrides</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Charts Row 1 -->
+<div class="row g-3 mb-4">
+  <!-- Daily Volume Trend -->
+  <div class="col-md-8">
+    <div class="card">
+      <div class="card-header d-flex justify-content-between align-items-center">
+        <span><i class="bi bi-graph-up"></i> Daily Draft Volume (30 days)</span>
+        <span class="badge bg-light text-dark border" id="volumePeriod">30 days</span>
+      </div>
+      <div class="card-body">
+        <canvas id="volumeChart" height="260"></canvas>
+      </div>
+    </div>
+  </div>
+  <!-- Classification Breakdown -->
+  <div class="col-md-4">
+    <div class="card">
+      <div class="card-header">
+        <i class="bi bi-pie-chart"></i> Classification Breakdown
+      </div>
+      <div class="card-body d-flex align-items-center justify-content-center">
+        <canvas id="classChart" height="260"></canvas>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Charts Row 2 -->
+<div class="row g-3 mb-4">
+  <!-- Response Time Trend -->
+  <div class="col-md-6">
+    <div class="card">
+      <div class="card-header">
+        <i class="bi bi-speedometer2"></i> Avg Pipeline Latency (ms)
+      </div>
+      <div class="card-body">
+        <canvas id="latencyChart" height="220"></canvas>
+      </div>
+    </div>
+  </div>
+  <!-- Multi-Repo Stats -->
+  <div class="col-md-6">
+    <div class="card">
+      <div class="card-header">
+        <i class="bi bi-git"></i> Multi-Repo PR Coverage
+      </div>
+      <div class="card-body">
+        <div class="chart-container-fixed">
+          <canvas id="repoChart"></canvas>
+        </div>
+        <div id="repoList" class="mt-2 font-sm"></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Severity Challenger Section -->
+<div class="row g-3 mb-4">
+  <div class="col-12">
+    <div class="card">
+      <div class="card-header d-flex justify-content-between align-items-center">
+        <span><i class="bi bi-shield-exclamation text-danger"></i> Rovo Severity Challenges</span>
+        <span class="badge bg-danger" id="overrideBadge">0 overrides</span>
+      </div>
+      <div class="card-body p-0">
+        <div class="table-responsive">
+          <table class="table table-sm mb-0" id="severityTable">
+            <thead>
+              <tr>
+                <th>Issue</th>
+                <th>Date</th>
+                <th>Rovo Changed</th>
+                <th>Our Recommendation</th>
+                <th>Disagrees</th>
+                <th>Confidence</th>
+                <th>Evidence</th>
+              </tr>
+            </thead>
+            <tbody id="severityBody">
+              <tr><td colspan="7" class="text-center text-muted py-3">Loading…</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Top Issues Table -->
+<div class="row g-3 mb-4">
+  <div class="col-md-6">
+    <div class="card">
+      <div class="card-header">
+        <i class="bi bi-trophy"></i> Most Active Issues
+      </div>
+      <div class="card-body p-0">
+        <div class="table-responsive">
+          <table class="table table-sm mb-0">
+            <thead>
+              <tr><th>Issue</th><th>Drafts</th><th>Approved</th><th>Avg Conf</th></tr>
+            </thead>
+            <tbody id="topIssuesBody">
+              <tr><td colspan="4" class="text-center text-muted py-3">Loading…</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  </div>
+  <!-- Quality Metrics -->
+  <div class="col-md-6">
+    <div class="card">
+      <div class="card-header">
+        <i class="bi bi-clipboard-data"></i> Quality Metrics
+      </div>
+      <div class="card-body">
+        <div class="quality-metric mb-3">
+          <div class="d-flex justify-content-between mb-1">
+            <span class="small">Drafts Edited Before Approval</span>
+            <span class="small fw-bold" id="qmEdited">{{ metrics.drafts_edited_before_approval }}</span>
+          </div>
+          <div class="progress progress-thin">
+            <div class="progress-bar bg-warning" id="qmEditedBar"></div>
+          </div>
+          <small class="text-muted"><span id="qmEditedPct">{{ "%.1f"|format(metrics.pct_approved_drafts_edited) }}</span>% of approved drafts were edited</small>
+        </div>
+        <div class="quality-metric mb-3">
+          <div class="d-flex justify-content-between mb-1">
+            <span class="small">Hallucination Rate</span>
+            <span class="small fw-bold text-danger" id="qmHallRate">0%</span>
+          </div>
+          <div class="progress progress-thin">
+            <div class="progress-bar bg-danger" id="qmHallBar"></div>
+          </div>
+        </div>
+        <div class="quality-metric mb-3">
+          <div class="d-flex justify-content-between mb-1">
+            <span class="small">PII Redactions (total)</span>
+            <span class="small fw-bold" id="qmRedactions">{{ metrics.total_redactions }}</span>
+          </div>
+        </div>
+        <div class="quality-metric">
+          <div class="d-flex justify-content-between mb-1">
+            <span class="small">Avg Pipeline Latency</span>
+            <span class="small fw-bold" id="qmLatency">{{ "%.0f"|format(metrics.avg_pipeline_duration_ms or 0) }} ms</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Chart.js CDN -->
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+
+<script src="/static/dashboard.js"></script>
+
+{% endblock %}

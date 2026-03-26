@@ -1,18 +1,4 @@
-"""Git provider client — GitHub, GitLab, Bitbucket (REST API).
-
-Fetches Pull Request metadata to ground draft responses with:
-  • Commit SHA, merge status, branch names
-  • PR title, description, author
-  • Merge timestamp
-
-PR reference detection:
-  Scans Jira issue body / comments for patterns:
-    - GitHub:    PR #123  /  github.com/.../pull/123
-    - GitLab:    MR !123  /  gitlab.com/.../merge_requests/123
-    - Bitbucket: PR-123   /  bitbucket.org/.../pull-requests/123
-
-Auth: Bearer token via GIT_TOKEN env var.
-"""
+"""Git provider client — GitHub, GitLab, Bitbucket PR metadata."""
 
 from __future__ import annotations
 
@@ -93,6 +79,30 @@ class GitClient:
     def provider(self) -> str:
         return self._provider
 
+    @property
+    def configured_repos(self) -> list[str]:
+        """Return all configured repos as owner/name strings.
+
+        Reads from ``GIT_REPOS`` (comma-separated) first, falls back
+        to the single ``GIT_REPO``.  Returns an empty list when nothing
+        is configured.
+        """
+        from src.config import settings as _s
+
+        repos: list[str] = []
+        raw = _s.git.repos
+        if raw:
+            for r in raw.split(","):
+                r = r.strip()
+                if not r:
+                    continue
+                repos.append(r if "/" in r else f"{self._owner}/{r}")
+        if not repos and self._repo:
+            repos.append(
+                self._repo if "/" in self._repo else f"{self._owner}/{self._repo}"
+            )
+        return repos
+
     # Public API
 
     def get_pr(
@@ -100,16 +110,7 @@ class GitClient:
         pr_number: int,
         repo: Optional[str] = None,
     ) -> GitPRMetadata:
-        """Fetch a Pull/Merge Request by number.
-
-        Args:
-            pr_number: The PR / MR number.
-            repo: Repository name (owner/repo or just repo).
-                  Falls back to ``settings.git.repo``.
-
-        Returns:
-            GitPRMetadata with normalised fields.
-        """
+        """Fetch a PR/MR by number."""
         resolved_repo = self._resolve_repo(repo)
         if self._provider == "github":
             return self._get_github_pr(pr_number, resolved_repo)
@@ -125,11 +126,7 @@ class GitClient:
         branch: str,
         repo: Optional[str] = None,
     ) -> Optional[GitPRMetadata]:
-        """Find an open PR for *branch* (head branch lookup).
-
-        Returns the first matching open PR, or None if not found.
-        Only supported for GitHub.
-        """
+        """Find an open PR for a branch. GitHub only."""
         resolved_repo = self._resolve_repo(repo)
         if self._provider != "github":
             logger.debug("get_pr_by_branch only supported for GitHub, skipping")
@@ -146,11 +143,7 @@ class GitClient:
         return None
 
     def detect_pr_refs(self, text: str) -> list[int]:
-        """Scan *text* for PR/MR references and return a deduplicated list of numbers.
-
-        Handles GitHub PR #N, GitLab MR !N, Bitbucket PR-N,
-        and full URL patterns.
-        """
+        """Scan text for PR/MR references and return deduplicated numbers."""
         found: set[int] = set()
         patterns = self._patterns_for_provider()
         for pattern in patterns:
@@ -170,11 +163,7 @@ class GitClient:
         repo: Optional[str] = None,
         max_prs: int = 3,
     ) -> list[GitPRMetadata]:
-        """High-level helper: detect PR refs in issue text + comments, fetch each.
-
-        Returns up to *max_prs* GitPRMetadata objects (most recent first).
-        Returns empty list when client is not enabled or no refs found.
-        """
+        """Detect PR refs in issue text + comments and fetch each."""
         if not self.enabled:
             return []
 
@@ -195,6 +184,63 @@ class GitClient:
                 logger.warning("Failed to fetch PR #%d: %s", num, exc)
 
         return results
+
+    def fetch_prs_across_repos(
+        self,
+        issue_text: str,
+        comment_texts: Optional[list[str]] = None,
+        repos: Optional[list[str]] = None,
+        max_prs_per_repo: int = 3,
+    ) -> tuple[list[GitPRMetadata], list[str]]:
+        """Fan out PR search across multiple repositories."""
+        if not self.enabled:
+            return [], []
+
+        target_repos = repos or self.configured_repos
+        if not target_repos:
+            # Fall back to single-repo behaviour
+            prs = self.fetch_prs_for_issue(
+                issue_text, comment_texts, max_prs=max_prs_per_repo
+            )
+            fallback_repo = (
+                self._repo
+                if "/" in (self._repo or "")
+                else f"{self._owner}/{self._repo}"
+            ) if self._repo else ""
+            return prs, [fallback_repo] if fallback_repo else []
+
+        all_text = issue_text or ""
+        for c in (comment_texts or []):
+            all_text += " " + c
+
+        pr_numbers = self.detect_pr_refs(all_text)
+        if not pr_numbers:
+            return [], target_repos
+
+        all_prs: list[GitPRMetadata] = []
+        seen_keys: set[str] = set()  # "repo#number" dedup
+
+        for repo in target_repos:
+            for num in pr_numbers[:max_prs_per_repo]:
+                key = f"{repo}#{num}"
+                if key in seen_keys:
+                    continue
+                try:
+                    pr = self.get_pr(num, repo=repo)
+                    all_prs.append(pr)
+                    seen_keys.add(key)
+                except Exception as exc:
+                    # PR doesn't exist in this repo — expected
+                    logger.debug(
+                        "PR #%d not found in %s: %s", num, repo, exc
+                    )
+
+        logger.info(
+            "Multi-repo PR search: %d PRs found across %d repos",
+            len(all_prs),
+            len(target_repos),
+        )
+        return all_prs, target_repos
 
     # GitHub implementation
     def _get_github_pr(self, pr_number: int, repo: str) -> GitPRMetadata:

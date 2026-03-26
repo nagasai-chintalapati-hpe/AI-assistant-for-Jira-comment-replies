@@ -1,0 +1,347 @@
+{% extends "UI.html" %}
+{% block title %}{{ draft.issue_key }} — Draft Review{% endblock %}
+
+{% block content %}
+
+<!-- Review Header -->
+<div class="review-header">
+  <a href="/ui" class="back-btn">← Drafts</a>
+  <a href="{{ jira_url }}" target="_blank" class="issue-key text-decoration-none">{{ draft.issue_key }}</a>
+  <span class="badge
+    {% if draft.status == 'generated' %}bg-warning text-dark
+    {% elif draft.status in ('approved','posted') %}bg-success
+    {% elif draft.status == 'rejected' %}bg-danger
+    {% else %}bg-secondary{% endif %}">
+    {{ draft.status }}
+  </span>
+  <span class="badge bg-light text-dark border">{{ (draft.classification_type or 'unclassified') | replace('_', ' ') | title }}</span>
+  <span class="confidence-pill ms-1">{{ "%.0f"|format((draft.confidence_score or 0) * 100) }}% confidence</span>
+</div>
+
+<p class="text-muted small mb-3 ms-1">{{ draft.classification_reasoning or '' }}</p>
+
+<div class="row g-3">
+
+  <!-- ─── Left Column: Draft + Actions ─── -->
+  <div class="col-lg-7">
+
+    <!-- Draft body -->
+    <div class="card draft-card mb-3">
+      <div class="card-header d-flex justify-content-between align-items-center">
+        <span class="evidence-header">Draft Reply</span>
+        <small class="text-muted font-monospace font-xs">{{ draft.draft_id }}</small>
+      </div>
+      <div class="card-body">
+        <textarea id="draftBody" class="form-control font-monospace" rows="12">{{ draft.body }}</textarea>
+      </div>
+    </div>
+
+    <!-- Actions -->
+    {% if draft.status == 'generated' %}
+    <div class="card mb-3">
+      <div class="card-body">
+        <div class="action-bar">
+          <form id="approveForm" method="post" action="/ui/drafts/{{ draft.draft_id }}/approve" class="d-inline-flex">
+            <input type="hidden" name="body" id="approveBody" value="{{ draft.body }}" />
+            <button type="submit" class="btn btn-success btn-approve">
+              Approve &amp; Post
+            </button>
+          </form>
+
+          <button class="btn btn-danger" data-bs-toggle="collapse" data-bs-target="#rejectForm">
+            Reject
+          </button>
+
+          <button id="copyBtn" class="btn btn-outline-secondary">
+            <span id="copyLabel">Copy</span>
+          </button>
+
+          <a href="{{ jira_url }}" target="_blank" class="btn btn-outline-primary">
+            Open in Jira
+          </a>
+        </div>
+
+        <div class="collapse" id="rejectForm">
+          <div class="reject-panel mt-3">
+            <form method="post" action="/ui/drafts/{{ draft.draft_id }}/reject">
+              <label class="form-label small fw-semibold">Rejection reason (optional)</label>
+              <textarea name="feedback" class="form-control mb-2" rows="2" placeholder="e.g. Missing environment details"></textarea>
+              <button type="submit" class="btn btn-sm btn-danger">Confirm Reject</button>
+            </form>
+          </div>
+        </div>
+      </div>
+    </div>
+    {% else %}
+    <div class="alert alert-secondary small">
+      This draft has already been <strong>{{ draft.status }}</strong>.
+      {% if draft.status == 'posted' %}The comment has been posted to Jira.{% endif %}
+    </div>
+    {% endif %}
+
+    <!-- Suggested Actions -->
+    {% if draft.suggested_actions or draft.suggested_labels %}
+    <div class="card mb-3">
+      <div class="card-header">
+        <span class="evidence-header">Suggested Actions</span>
+      </div>
+      <div class="card-body small">
+        {% for action in draft.suggested_actions or [] %}
+        <span class="badge bg-primary me-1 mb-1">{{ action.action }}: {{ action.value }}</span>
+        {% endfor %}
+        {% for label in draft.suggested_labels or [] %}
+        <span class="badge bg-secondary me-1 mb-1">{{ label }}</span>
+        {% endfor %}
+      </div>
+    </div>
+    {% endif %}
+  </div>
+
+  <!-- ─── Right Column: Evidence Panel ─── -->
+  <div class="col-lg-5">
+
+    <!-- Pattern alert -->
+    {% if draft.pattern_note %}
+    <div class="pattern-alert mb-3">
+      <div>
+        <div class="fw-semibold small">Systemic Pattern Detected</div>
+        <div class="small text-secondary">{{ draft.pattern_note }}</div>
+      </div>
+    </div>
+    {% endif %}
+
+    <!-- Severity Challenge (Rovo counter-assessment) -->
+    {% if draft.severity_challenge %}
+    {% set sc = draft.severity_challenge %}
+    <div class="card mb-3 {% if sc.disagrees %}severity-card-disagrees{% else %}severity-card-agrees{% endif %}">
+      <div class="card-header {% if sc.disagrees %}severity-header-disagrees{% else %}severity-header-agrees{% endif %}">
+        <span class="evidence-header">
+          <i class="bi bi-shield-exclamation {% if sc.disagrees %}text-danger{% else %}text-success{% endif %}"></i>
+          Rovo Severity Challenge
+          {% if sc.disagrees %}
+          <span class="badge bg-danger ms-1">Override Recommended</span>
+          {% else %}
+          <span class="badge bg-success ms-1">Agrees</span>
+          {% endif %}
+        </span>
+      </div>
+      <div class="card-body small">
+        {% if sc.rovo_changes %}
+        {% set latest = sc.rovo_changes[-1] %}
+        <p class="mb-2">
+          <strong>Rovo changed:</strong> {{ latest.field|title }}
+          <span class="text-muted">{{ latest.from_value }}</span> →
+          <span class="{% if latest.is_downgrade %}text-danger{% else %}text-success{% endif %} fw-bold">
+            {{ latest.to_value }}
+          </span>
+          {% if latest.is_downgrade %}<span class="badge bg-danger ms-1 font-xxs">Downgrade</span>{% endif %}
+        </p>
+        {% endif %}
+        <p class="mb-2">
+          <strong>Our recommendation:</strong>
+          <span class="badge {% if sc.disagrees %}bg-danger{% else %}bg-success{% endif %}">{{ sc.recommended_severity }}</span>
+          <span class="confidence-pill ms-1">{{ "%.0f"|format(sc.confidence * 100) }}% confidence</span>
+        </p>
+        {% set ev = sc.evidence %}
+        {% if ev %}
+        <div class="mt-2">
+          <strong>Evidence signals:</strong>
+          <ul class="mb-0 mt-1 evidence-list">
+            {% if ev.outage_keyword_matches %}
+            <li>Outage keywords: {{ ev.outage_keyword_matches | join(', ') }}</li>
+            {% endif %}
+            {% if ev.customer_escalation %}
+            <li class="text-danger fw-semibold">Customer escalation detected</li>
+            {% endif %}
+            {% if ev.pattern_count >= 3 %}
+            <li>{{ ev.pattern_count }} open issues on same component/version</li>
+            {% endif %}
+            {% if ev.jenkins_failure_count %}
+            <li>{{ ev.jenkins_failure_count }} Jenkins build failure(s)</li>
+            {% endif %}
+            {% if ev.testrail_failure_count %}
+            <li>{{ ev.testrail_failure_count }} TestRail test failure(s)</li>
+            {% endif %}
+            {% if ev.linked_blocker_count %}
+            <li>{{ ev.linked_blocker_count }} blocking issue link(s)</li>
+            {% endif %}
+            {% for hint in ev.description_severity_hints or [] %}
+            <li>{{ hint }}</li>
+            {% endfor %}
+          </ul>
+        </div>
+        {% endif %}
+        {% if sc.challenge_note %}
+        <details class="mt-2">
+          <summary class="fw-semibold cursor-pointer">Full challenge note</summary>
+          <pre class="mt-1 p-2 small challenge-note">{{ sc.challenge_note }}</pre>
+        </details>
+        {% endif %}
+      </div>
+    </div>
+    {% endif %}
+
+    <!-- Multi-repo tracking -->
+    {% if draft.repos_searched %}
+    <div class="card mb-3">
+      <div class="card-header">
+        <span class="evidence-header"><i class="bi bi-git"></i> Repos Searched</span>
+      </div>
+      <div class="card-body small">
+        {% for repo in draft.repos_searched %}
+        <span class="badge bg-light text-dark border me-1 mb-1">{{ repo }}</span>
+        {% endfor %}
+      </div>
+    </div>
+    {% endif %}
+
+    <!-- Duplicate warning -->
+    {% if draft.similar_drafts %}
+    <div class="card mb-3 warn-card">
+      <div class="card-header warn-header">
+        <span class="evidence-header">You may have already replied to this</span>
+      </div>
+      <ul class="list-group list-group-flush">
+        {% for sd in draft.similar_drafts %}
+        <li class="list-group-item similar-draft-item">
+          <div class="d-flex justify-content-between align-items-center">
+            <a href="/ui/drafts/{{ sd.draft_id }}" class="text-decoration-none fw-semibold font-monospace font-sm">{{ sd.draft_id }}</a>
+            <span class="badge
+              {% if sd.status in ('approved','posted') %}bg-success
+              {% elif sd.status == 'rejected' %}bg-danger
+              {% else %}bg-warning text-dark{% endif %}">{{ sd.status }}</span>
+          </div>
+          <div class="text-muted mt-1 font-caption">{{ sd.body_preview }}…</div>
+          <div class="similarity-bar">
+            <div class="similarity-fill" data-width="{{ '%.0f'|format(sd.similarity * 100) }}"></div>
+          </div>
+          <div class="text-muted mt-1 font-xs">
+            {{ '%.0f'|format(sd.similarity * 100) }}% similar &middot; {{ sd.created_at }}
+          </div>
+        </li>
+        {% endfor %}
+      </ul>
+    </div>
+    {% endif %}
+
+    <!-- What's missing -->
+    {% if missing_context %}
+    <div class="card mb-3 warn-card">
+      <div class="card-header warn-header">
+        <span class="evidence-header">What's Missing</span>
+      </div>
+      <ul class="list-group list-group-flush">
+        {% for item in missing_context %}
+        <li class="list-group-item small">{{ item }}</li>
+        {% endfor %}
+      </ul>
+    </div>
+    {% endif %}
+
+    <!-- Evidence & Citations -->
+    {% if draft.citations %}
+    <div class="card mb-3">
+      <div class="card-header">
+        <span class="evidence-header">
+          Evidence &amp; Citations
+          <span class="badge bg-secondary ms-1">{{ draft.citations|length }}</span>
+        </span>
+      </div>
+      <ul class="list-group list-group-flush">
+        {% for c in draft.citations %}
+        <li class="list-group-item small">
+          <div class="d-flex align-items-center gap-1 mb-1">
+            <span class="fw-semibold text-secondary">{{ c.source }}</span>
+            {% if c.type %}
+            <span class="badge bg-light text-dark border font-xxs">{{ c.type }}</span>
+            {% endif %}
+          </div>
+          {% if c.url %}
+          <a href="{{ c.url }}" target="_blank" class="text-break small d-block mb-1">
+            {{ c.url[:80] }}{% if c.url|length > 80 %}…{% endif %}
+          </a>
+          {% endif %}
+          {% if c.excerpt %}
+          <span class="text-muted font-caption">{{ c.excerpt[:200] }}</span>
+          {% endif %}
+        </li>
+        {% endfor %}
+      </ul>
+    </div>
+    {% endif %}
+
+    <!-- Evidence Sources -->
+    {% if draft.evidence_used %}
+    <div class="card mb-3">
+      <div class="card-header">
+        <span class="evidence-header">
+          Evidence Sources
+          <span class="badge bg-secondary ms-1">{{ draft.evidence_used|length }}</span>
+        </span>
+      </div>
+      <ul class="list-group list-group-flush">
+        {% for e in draft.evidence_used %}
+        <li class="list-group-item small text-muted">{{ e }}</li>
+        {% endfor %}
+      </ul>
+    </div>
+    {% endif %}
+
+    <!-- Pipeline Stats -->
+    <div class="card mb-3">
+      <div class="card-header">
+        <span class="evidence-header">Pipeline Stats</span>
+      </div>
+      <ul class="list-group list-group-flush meta-list">
+        <li class="list-group-item">
+          <span class="meta-label">Pipeline Time</span>
+          <span class="meta-value">{{ "%.1f"|format((draft.pipeline_duration_ms or 0) / 1000) }}s</span>
+        </li>
+        <li class="list-group-item">
+          <span class="meta-label">PII Redactions</span>
+          <span class="meta-value">{{ draft.redaction_count or 0 }}</span>
+        </li>
+        <li class="list-group-item">
+          <span class="meta-label">Hallucination Flag</span>
+          <span class="meta-value">{{ 'Yes' if draft.hallucination_flag else 'No' }}</span>
+        </li>
+        <li class="list-group-item">
+          <span class="meta-label">Citations</span>
+          <span class="meta-value">{{ (draft.citations or [])|length }}</span>
+        </li>
+        <li class="list-group-item">
+          <span class="meta-label">Evidence Sources</span>
+          <span class="meta-value">{{ (draft.evidence_used or [])|length }}</span>
+        </li>
+      </ul>
+    </div>
+
+    <!-- Metadata -->
+    <div class="card">
+      <div class="card-header">
+        <span class="evidence-header">Metadata</span>
+      </div>
+      <ul class="list-group list-group-flush meta-list">
+        <li class="list-group-item">
+          <span class="meta-label">Created</span>
+          <span class="meta-value">{{ draft.created_at[:19] if draft.created_at else '—' }}</span>
+        </li>
+        <li class="list-group-item">
+          <span class="meta-label">Approved</span>
+          <span class="meta-value">{{ draft.approved_at[:19] if draft.approved_at else '—' }}</span>
+        </li>
+        <li class="list-group-item">
+          <span class="meta-label">Approved by</span>
+          <span class="meta-value">{{ draft.approved_by or '—' }}</span>
+        </li>
+        <li class="list-group-item">
+          <span class="meta-label">Comment ID</span>
+          <span class="meta-value font-monospace font-caption">{{ draft.in_reply_to_comment_id or '—' }}</span>
+        </li>
+      </ul>
+    </div>
+
+  </div>
+</div>
+
+{% endblock %}

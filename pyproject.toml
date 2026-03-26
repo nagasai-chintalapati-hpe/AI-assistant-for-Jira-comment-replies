@@ -10,7 +10,8 @@ readme = "README.md"
 requires-python = ">=3.10"
 authors = [
     {name = "Nagasai", email = "nagasai.chintalapati@hpe.com"},
-    {name = "Yousef", email = "yousef.konswah@hpe.com"}
+    {name = "Yousef", email = "yousef.konswah@hpe.com"},
+    {name = "Vinnarasu", email = "vinnarasu.ganesan@hpe.com"}
 ]
 
 dependencies = [
@@ -33,6 +34,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+# Development and testing tools
 dev = [
     "pytest>=7.4.0",
     "pytest-cov>=4.1.0",
@@ -42,6 +44,47 @@ dev = [
     "ruff>=0.1.0",
     "mypy>=1.5.0",
 ]
+# Redis-backed distributed rate limiting (production HA deployments)
+redis = [
+    "redis>=5.0.0",
+]
+# RabbitMQ message queue / DMZ relay (production queue-based deployments)
+queue = [
+    "pika>=1.3.0",
+]
+# S3 / MinIO artifact storage
+s3 = [
+    "boto3>=1.34.0",
+]
+# Prometheus metrics scraping
+observability = [
+    "prometheus-client>=0.20.0",
+]
+# All production optional extras combined
+prod = [
+    "redis>=5.0.0",
+    "pika>=1.3.0",
+    "boto3>=1.34.0",
+    "prometheus-client>=0.20.0",
+]
+# Everything (dev + prod extras)
+all = [
+    "pytest>=7.4.0",
+    "pytest-cov>=4.1.0",
+    "pytest-asyncio>=0.21.0",
+    "httpx>=0.27.0",
+    "black>=23.0.0",
+    "ruff>=0.1.0",
+    "mypy>=1.5.0",
+    "redis>=5.0.0",
+    "pika>=1.3.0",
+    "boto3>=1.34.0",
+    "prometheus-client>=0.20.0",
+]
+
+[project.scripts]
+# Run the service: jira-assistant
+jira-assistant = "src.api.app:app"
 
 [tool.black]
 line-length = 100
@@ -57,3 +100,6 @@ python_version = "3.10"
 warn_return_any = true
 warn_unused_configs = true
 disallow_untyped_defs = false
+
+[tool.hatch.build.targets.wheel]
+packages = ["src"]

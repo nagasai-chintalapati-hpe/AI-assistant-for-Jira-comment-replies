@@ -10,7 +10,7 @@ from src.integrations.git import GitClient
 from src.models.context import GitPRMetadata
 
 
-# ── Fixtures ──────────────────────────────────────────────────────────────────
+# Fixtures
 
 GITHUB_PR_PAYLOAD = {
     "number": 42,
@@ -60,7 +60,7 @@ def _make_client(provider="github", token="tok", owner="acme", repo="vme-api"):
     return GitClient(provider=provider, token=token, owner=owner, repo=repo)
 
 
-# ── enabled property ──────────────────────────────────────────────────────────
+# enabled property
 
 def test_enabled_when_token_and_owner_set():
     client = _make_client()
@@ -77,7 +77,7 @@ def test_disabled_when_no_owner():
     assert client.enabled is False
 
 
-# ── detect_pr_refs ────────────────────────────────────────────────────────────
+# detect_pr_refs
 
 @pytest.mark.parametrize("text,expected", [
     ("See PR #42 for the fix", [42]),
@@ -112,7 +112,7 @@ def test_detect_pr_refs_bitbucket(text, expected):
     assert client.detect_pr_refs(text) == expected
 
 
-# ── get_pr GitHub ─────────────────────────────────────────────────────────────
+# get_pr GitHub
 
 def test_get_github_pr_success():
     client = _make_client(provider="github")
@@ -170,7 +170,7 @@ def test_get_github_pr_open_not_merged():
     assert pr.merge_commit_sha is None
 
 
-# ── get_pr GitLab ─────────────────────────────────────────────────────────────
+# get_pr GitLab
 
 def test_get_gitlab_mr_success():
     client = _make_client(provider="gitlab", owner="acme", repo="vme")
@@ -189,7 +189,7 @@ def test_get_gitlab_mr_success():
     assert pr.provider == "gitlab"
 
 
-# ── get_pr Bitbucket ──────────────────────────────────────────────────────────
+# get_pr Bitbucket
 
 def test_get_bitbucket_pr_success():
     client = _make_client(provider="bitbucket", owner="acme", repo="vme")
@@ -208,7 +208,7 @@ def test_get_bitbucket_pr_success():
     assert pr.provider == "bitbucket"
 
 
-# ── get_pr_by_branch ──────────────────────────────────────────────────────────
+# get_pr_by_branch
 
 def test_get_pr_by_branch_found():
     client = _make_client(provider="github")
@@ -242,7 +242,7 @@ def test_get_pr_by_branch_not_supported_for_gitlab():
     assert result is None
 
 
-# ── fetch_prs_for_issue ───────────────────────────────────────────────────────
+# fetch_prs_for_issue
 
 def test_fetch_prs_for_issue_detects_and_fetches():
     client = _make_client(provider="github")
@@ -288,7 +288,7 @@ def test_fetch_prs_for_issue_respects_max_prs():
     assert len(prs) == 2
 
 
-# ── HTTP error propagation ────────────────────────────────────────────────────
+# HTTP error propagation
 
 def test_get_pr_raises_on_http_error():
     from requests.exceptions import HTTPError
@@ -305,7 +305,7 @@ def test_get_pr_raises_on_http_error():
             client.get_pr(999)
 
 
-# ── _resolve_repo ─────────────────────────────────────────────────────────────
+# _resolve_repo
 
 def test_resolve_repo_uses_default():
     client = GitClient(provider="github", token="tok", owner="myorg", repo="myrepo")
@@ -328,7 +328,7 @@ def test_resolve_repo_raises_when_no_repo_configured():
         client._resolve_repo(None)
 
 
-# ── unsupported provider ──────────────────────────────────────────────────────
+# unsupported provider
 
 def test_unsupported_provider_raises():
     client = GitClient(provider="svn", token="tok", owner="acme", repo="vme")

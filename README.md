@@ -1,250 +1,226 @@
 # AI Assistant for Jira Comment Replies
 
-**Intern Project 2026** — Nagasai & Yousef
+> Drafts context-aware replies to Jira defect comments — with human review before anything is posted.
 
-AI assistant for Jira defect comments. It listens to Jira webhook events, classifies comment intent, collects issue context, generates a draft reply, and supports manual approve/reject with optional Jira posting and notifications.
+A **FastAPI** service that listens for Jira webhooks, classifies comments into intent buckets, collects evidence from TestRail, Git, Jenkins, Confluence, and S3, then drafts a structured reply for human approval.
 
----
-
-## Completed
-
-### Phase 1: Architecture & Scaffolding
-- [x] Project structure, config, and `.env` template
-- [x] Core models (`Comment`, `Classification`, `Context`, `Draft`, `Webhook`)
-- [x] Jira REST integration (`JiraClient`)
-- [x] Webhook receiver (`POST /webhook/jira`)
-- [x] Event filtering (issue type, status, keywords, idempotency)
-- [x] Unit tests for Jira client and webhook filter
-
-### Phase 2: Comment Classification
-- [x] 4-bucket keyword classification with optional Copilot SDK fallback
-- [x] Unit tests for classifier
-
-### Phase 3: Context Collection & Draft Generation
-- [x] Context collection (issue fields, recent comments, attachments, linked issues, changelog)
-- [x] Jenkins log URL extraction
-- [x] Template-based drafting with optional LLM polish
-- [x] Evidence/citation tracking + suggested labels/actions
-- [x] Unit tests for context collector and drafter
-
-### Phase 4: Full Pipeline & Approval Workflow
-- [x] End-to-end pipeline orchestration
-- [x] Draft storage + API (`GET /drafts`, `GET /drafts/{id}`)
-- [x] Approve/reject workflow (`POST /approve`, `POST /reject`)
-- [x] Integration tests via FastAPI `TestClient`
-
-### Phase 5: Notifications
-- [x] Optional Teams webhook and Email (SMTP)
-- [x] Notification tests
+**Authors:** Nagasai Chintalapati · Yousef Konswah · Vinnarasu Ganesan — HPE 2026
 
 ---
 
-### MVP v2 — Phase 1: Config, SQLite & Classification Enhancements
-- [x] Centralised config — `AppConfig` with nested Jira, Copilot, LLM, RAG, Confluence, TestRail, Log, Notification configs
-- [x] Local LLM support — llama.cpp / GGUF backend via `LLM_BACKEND=local`
-- [x] SQLite draft store — persistent storage with WAL mode, indexed queries
-- [x] 8 classification buckets — cannot_reproduce, need_more_info, fixed_validate, by_design, duplicate_fixed, blocked_waiting, config_issue, other
-- [x] Drafter templates — one template per bucket with evidence, citations, suggested labels & actions
-- [x] RAG, Confluence, TestRail, Log Lookup data models — ready for Phase 2+
-- [x] **Final:** 138 unit + integration tests passing
+## Why
 
-### MVP v2 — Phase 2: RAG Engine & Document Ingestion
-- [x] RAG engine — ChromaDB-backed vector store with sentence-transformer embeddings
-- [x] Document ingester — sliding-window chunking with paragraph/sentence boundary preference
-- [x] PDF ingestion — parse via pypdf, chunk, and index
-- [x] Confluence client — fetch pages, search by space/label, HTML-to-text conversion
-- [x] Confluence ingestion — discover and index pages into RAG
-- [x] RAG API endpoints — ingest (PDF, text, Confluence), search, stats, delete
-- [x] Context collector integration — queries RAG for relevant snippets during context gathering
-- [x] Drafter integration — RAG snippets in evidence formatting, citations, and evidence tracking
-- [x] **Final:** 211 unit + integration tests, 82% code coverage
+| Without | With |
+|---------|------|
+| Manually open TestRail, Git, ELK to triage | Context collected in < 5 s |
+| Copy-paste test IDs and log lines by hand | Draft pre-populated with evidence links |
+| Reply quality varies by person/shift | Consistent tone and structure |
+| No audit trail | Every draft stored with full evidence chain |
+| Only works when someone is at a desk | 24×7 first-pass coverage |
 
-### MVP v2 — Phase 3: TestRail & Jenkins Log Integration
-- [x] `TestRailClient` — API key + session-cookie auth, get_run, get_run_summary, failed tests
-- [x] `LogLookupService` — Jenkins console fetch, local file grep, build metadata extraction
-- [x] Context collector — detects TestRail run IDs from issue text, fetches summaries; fetches Jenkins console logs for detected URLs
-- [x] Drafter — TestRail pass-rate and failed tests in evidence, retest checklist, build metadata in citations
-- [x] Tests — `test_testrail.py`, `test_log_lookup.py`, updated context/drafter tests
-- [x] **Final:** 331 unit + integration tests passing
+---
 
-### MVP v2 — Phase 4: Git PR Metadata + ELK/OpenSearch Logs
-- [x] `GitConfig` + `ELKConfig` — centralised settings for Git provider and ELK cluster
-- [x] `GitPRMetadata` model — pr_number, pr_title, pr_url, state, merged, merge_commit_sha, head/base branch, author, timestamps
-- [x] `GitClient` — GitHub / GitLab / Bitbucket REST API client; `get_pr`, `get_pr_by_branch`, `detect_pr_refs`, `fetch_prs_for_issue`
-- [x] `LogLookupService` extended — ELK backend with `search_elk_logs`, Elasticsearch Query DSL builder, response parser, API-key + Basic auth
-- [x] `ContextCollector` — `_fetch_git_prs` (PR ref detection from issue + comments), `_fetch_elk_logs` (summary-based ELK query); `git_prs` + `elk_log_entries` in `ContextCollectionResult`
-- [x] Drafter — `_format_pr_evidence`, `_format_elk_preview`; PR + ELK in existing evidence, citations, and evidence_used; CANNOT_REPRODUCE + FIXED_VALIDATE templates surface PR commit + branch
-- [x] `app.py` — `GitClient` wired in, health endpoint now reports `git` + `elk` integration status; version bumped to 0.6.0
-- [x] Tests — `test_git_client.py` (37 tests), `test_elk_lookup.py` (19 tests)
-- [x] **Final:** 352 unit + integration tests passing, 81% code coverage
+## Features
 
-## Architecture
+- **8-bucket classification** — Cannot Reproduce, Need More Info, Fixed-Validate, By Design, Duplicate, Blocked, Config Issue, Other
+- **Multi-source context** — TestRail, Git PRs, Jenkins logs, ELK, Confluence KB, S3 artifacts
+- **RAG knowledge base** — ChromaDB semantic search over Confluence, PDFs, and resolved Jira tickets
+- **Multi-repo PR search** — fan-out across configured repos
+- **Duplicate detection** — Jaccard similarity against past drafts on the same issue
+- **Systemic pattern alerts** — red alert when 3+ open bugs share the same component/version
+- **Review UI** — `/ui` dashboard: approve, edit inline, reject, rate 1–5 stars
+- **Analytics dashboard** — `/dashboard` with KPIs, charts, severity challenge log
+- **Teams notifications** — AdaptiveCard with Approve/Reject buttons
+- **Webhook security** — HMAC-SHA256 + per-IP rate limiting
 
-```
-Jira Cloud (Webhook)
-    │
-    ▼
-POST /webhook/jira  ──▶  EventFilter
-    │
-    ▼
-CommentClassifier  ──▶  Keyword rules │ Copilot SDK fallback  (8 buckets)
-    │
-    ▼
-ContextCollector   ──▶  Issue fields, comments, attachments, changelog, Jenkins links
-    │                    + RAG engine semantic search (when configured)
-    ▼
-ResponseDrafter    ──▶  Template fill + RAG evidence + optional Copilot polish
-    │
-    ▼
-SQLite Store       ──▶  GET /drafts  │  POST /approve  │  POST /reject
-    │
-    ▼
-Notifications      ──▶  Teams Webhook (card)  │  Email (SMTP)
-
-    ┌───────────────────────────────────────────────────────┐
-    │  RAG Pipeline (Phase 2)                               │
-    │  POST /rag/ingest/pdf  ──▶  pypdf → chunker → ChromaDB│
-    │  POST /rag/ingest/text ──▶  chunker → ChromaDB        │
-    │  POST /rag/ingest/confluence ──▶ Confluence → chunker  │
-    │  GET  /rag/search      ──▶  semantic query → snippets  │
-    └───────────────────────────────────────────────────────┘
-```
-
-## Classification Buckets
-
-| Bucket | Typical triggers |
-|---|---|
-| Cannot Repro | "cannot reproduce", "can't repro", "works on my machine" |
-| Need Info / Logs | "need logs", "provide logs", "need more info" |
-| Fixed — Validate | "fix ready", "fix deployed", "please validate", "already fixed" |
-| By Design | "as designed", "by design", "expected behavior" |
-| Other | (fallback) |
-
-## Project Structure
-
-```
-├── src/
-│   ├── config.py                 # Centralised settings (env vars)
-│   ├── agent/
-│   │   ├── classifier.py         # Comment classification (keywords + Copilot SDK)
-│   │   ├── context_collector.py  # Jira context + RAG snippet gathering
-│   │   └── drafter.py            # Template-based draft generation with RAG evidence
-│   ├── api/
-│   │   ├── app.py                # FastAPI webhook, approval & RAG endpoints
-│   │   └── event_filter.py       # Webhook event gate rules
-│   ├── integrations/
-│   │   ├── confluence.py         # Confluence Cloud API client (RAG ingestion)
-│   │   ├── jira.py               # Jira Cloud REST API client
-│   │   └── notifications.py      # Teams webhook + Email (SMTP) notifier
-│   ├── models/
-│   │   ├── classification.py     # CommentType enum + classification model
-│   │   ├── comment.py            # Comment data model
-│   │   ├── context.py            # IssueContext + collection result
-│   │   ├── draft.py              # Draft + DraftStatus models
-│   │   ├── rag.py                # DocumentChunk, RAGSnippet, RAGResult models
-│   │   └── webhook.py            # JiraWebhookEvent payload model
-│   ├── rag/
-│   │   ├── engine.py             # ChromaDB-backed semantic retrieval engine
-│   │   └── ingest.py             # Document ingestion pipeline (PDF, text, Confluence)
-│   └── storage/
-│       └── sqlite_store.py       # SQLite persistent draft store (WAL mode)
-├── tests/
-│   ├── conftest.py               # Shared fixtures
-│   └── unit/
-│       ├── test_classifier.py
-│       ├── test_confluence.py    # Confluence client tests
-│       ├── test_context_collector.py
-│       ├── test_drafter.py
-│       ├── test_ingester.py      # Document ingester tests
-│       ├── test_jira_client.py
-│       ├── test_notifications.py
-│       ├── test_pipeline.py      # End-to-end via FastAPI TestClient
-│       ├── test_rag_engine.py    # RAG engine tests
-│       ├── test_rag_integration.py # RAG + drafter/collector integration
-│       └── test_webhook_filter.py
-├── docs/
-│   ├── ARCHITECTURE.md
-│   └── SETUP.md
-├── .env.example
-├── .gitignore
-├── pyproject.toml
-├── pytest.ini
-└── README.md
-```
+---
 
 ## Quick Start
 
 ```bash
-# 1) Create and activate virtual environment
-python3 -m venv .venv
-source .venv/bin/activate
+# Clone and install
+git clone git@github.com:nagasai-chintalapati-hpe/AI-assistant-for-Jira-comment-replies.git && cd AI-assistant-for-Jira-comment-replies
 
-# 2) Install project + dev dependencies
-pip install -e ".[dev]"
-
-# 3) Configure environment
+# Configure
 cp .env.example .env
+# Set: JIRA_BASE_URL, JIRA_USERNAME, JIRA_API_TOKEN
 
-# 4) Run tests
-pytest -q
+# Run
+docker compose up -d --build
 
-# 5) Run API
-uvicorn src.api.app:app --host 127.0.0.1 --port 8000
-
-# 6) Verify service
-curl -sS http://127.0.0.1:8000/health
+# Open
+open http://localhost:8000/ui
 ```
 
-## Required Configuration
+---
 
-### Minimum for local development
-- `JIRA_BASE_URL`
-- `JIRA_USERNAME`
-- `JIRA_API_TOKEN`
+## Architecture
 
-### Required for secured production use
-- `WEBHOOK_SECRET` (HMAC signature validation)
-- `APPROVAL_API_KEY` (required on approve/reject endpoints)
-- `ASSISTANT_DB_PATH` (persistent SQLite DB path)
+```
+Jira Cloud ──webhook──▶ Event Filter ──▶ Classifier ──▶ Context Collector
+                                                              │
+     ┌────────────────────────────────────────────────────────┘
+     ▼
+Duplicate Detector ──▶ Pattern Detector ──▶ Drafter ──▶ Review UI
+                                                         │
+                                               ┌─────────┴────────┐
+                                               ▼                  ▼
+                                           Approve            Reject
+                                        (post to Jira)    (store feedback)
+```
 
-### Optional features
-- `COPILOT_API_KEY` (LLM enhancement)
-- `TEAMS_WEBHOOK_URL` (Teams notifications)
-- `SMTP_HOST`, `SMTP_PORT`, `SMTP_USERNAME`, `SMTP_PASSWORD`, `EMAIL_FROM`, `EMAIL_TO` (email notifications)
+Full details: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
 
-## API Endpoints
+---
 
-- `GET /health` — health check
-- `POST /webhook/jira` — receive Jira comment webhook events
-- `GET /drafts` — list drafts (supports `issue_key` filter)
-- `GET /drafts/{draft_id}` — get one draft
-- `POST /approve` — approve draft (and attempt Jira post)
-- `POST /reject` — reject draft with feedback
+## API
 
-### Auth headers
-- Webhook signature: `X-Hub-Signature-256: sha256=<digest>` (or `X-Webhook-Signature: <digest>`)
-- Approve/reject token: `X-Approval-Token: <APPROVAL_API_KEY>`
+### Core
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| POST | `/webhook/jira` | Receive Jira comment events |
+| POST | `/approve` | Approve draft (JSON API) |
+| POST | `/reject` | Reject draft (JSON API) |
+| GET | `/drafts` | List drafts |
+| GET | `/drafts/{id}` | Get a single draft |
+
+### Review UI
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/ui` | Draft review dashboard |
+| GET | `/ui/drafts/{id}` | Draft detail + evidence panel |
+| POST | `/ui/drafts/{id}/approve` | Approve and post to Jira |
+| POST | `/ui/drafts/{id}/reject` | Reject with feedback |
+| POST | `/ui/drafts/{id}/rate` | Rate 1–5 stars |
+
+### Dashboard
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/dashboard` | Analytics dashboard |
+| GET | `/dashboard/api/summary` | KPI summary |
+| GET | `/dashboard/api/daily-volume` | Daily draft volume |
+| GET | `/dashboard/api/classifications` | Classification breakdown |
+| GET | `/dashboard/api/severity` | Severity challenge log |
+| GET | `/dashboard/api/top-issues` | Most active issues |
+| GET | `/dashboard/api/repos` | Multi-repo PR stats |
+| GET | `/dashboard/api/response-time` | Pipeline latency trend |
+
+### RAG
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| POST | `/rag/ingest/pdf` | Ingest a PDF |
+| POST | `/rag/ingest/text` | Ingest raw text |
+| POST | `/rag/ingest/confluence` | Ingest Confluence pages |
+| POST | `/rag/ingest/jira` | Ingest resolved Jira tickets |
+| GET | `/rag/search` | Semantic search (query params) |
+| POST | `/rag/query` | Semantic search (JSON body) |
+| GET | `/rag/stats` | Collection stats |
+| DELETE | `/rag/document/{title}` | Remove a source document |
+
+### Ops
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/health` | Liveness check |
+| GET | `/health/deep` | Readiness check (all integrations) |
+| GET | `/metrics` | Draft quality metrics (JSON) |
+| GET | `/metrics/prometheus` | Prometheus-format metrics |
+| POST | `/admin/drafts/purge-stale` | Purge old unactioned drafts |
+
+---
+
+## Configuration
+
+Copy `.env.example` to `.env`. See [docs/SETUP.md](docs/SETUP.md) for the full variable reference.
+
+**Minimum required:**
+
+```env
+JIRA_BASE_URL=https://your-org.atlassian.net
+JIRA_USERNAME=your-email@company.com
+JIRA_API_TOKEN=your-api-token
+```
+
+**Optional extras:**
+
+```bash
+pip install -e ".[redis]"          # Redis rate-limiter
+pip install -e ".[queue]"          # RabbitMQ async queue
+pip install -e ".[s3]"             # S3 / MinIO artifact fetcher
+pip install -e ".[observability]"  # Prometheus metrics
+pip install -e ".[prod]"           # All of the above
+```
+
+---
+
+## Tests
+
+```bash
+pytest tests/unit/ -v                # unit tests
+pytest tests/unit/ --cov=src         # with coverage
+pytest tests/integration/ -v         # requires live credentials
+```
+
+---
 
 ## Project Structure
 
 ```
-├── src/
-│   ├── api/                  # FastAPI endpoints and event filtering
-│   ├── agent/                # Classification, context collection, drafting
-│   ├── integrations/         # Jira + notification adapters
-│   ├── models/               # Pydantic data models
-│   ├── storage/              # SQLite persistence
-│   └── config.py             # Environment-driven settings
-├── tests/                    # Unit/integration tests
-├── docs/
-│   ├── ARCHITECTURE.md
-│   └── SETUP.md
-├── .env.example
-├── pyproject.toml
-└── README.md
+src/
+├── api/
+│   ├── app.py              # FastAPI application + lifespan
+│   ├── orchestrator.py     # Pipeline orchestration + pattern detection
+│   ├── event_filter.py     # Dedup + bot guard
+│   ├── security.py         # HMAC validation + rate limiting
+│   ├── deps.py             # Singleton dependencies
+│   └── routes/
+│       ├── webhook.py      # POST /webhook/jira
+│       ├── drafts.py       # JSON draft API
+│       ├── rag.py          # RAG ingest + search
+│       ├── health.py       # Health + metrics
+│       ├── admin.py        # Admin operations
+│       ├── ui.py           # Review UI routes
+│       └── dashboard.py    # Analytics dashboard
+├── agent/
+│   ├── classifier.py       # 8-bucket classifier
+│   ├── context_collector.py# Multi-source evidence collection
+│   ├── drafter.py          # Draft generation
+│   ├── duplicate_detector.py # Jaccard similarity check
+│   ├── severity_challenger.py # Rovo severity evaluation
+│   └── pipeline_correlator.py # Cross-pipeline failure detection
+├── integrations/
+│   ├── jira.py             # Jira REST API
+│   ├── testrail.py         # TestRail API
+│   ├── git.py              # GitHub / GitLab / Bitbucket
+│   ├── confluence.py       # Confluence API
+│   ├── jenkins.py          # Jenkins API
+│   ├── log_lookup.py       # Jenkins console + ELK logs
+│   ├── s3_connector.py     # S3 / MinIO artifacts
+│   └── notifications.py    # Teams + Email
+├── rag/
+│   ├── engine.py           # ChromaDB vector search
+│   └── ingest.py           # PDF / Confluence / text / Jira ingestion
+├── models/                 # Pydantic models
+├── storage/
+│   └── sqlite_store.py     # Draft persistence + metrics
+├── llm/
+│   └── client.py           # Copilot SDK / local LLM client
+├── utils/
+│   └── redactor.py         # PII redaction
+└── config.py               # Environment-based settings
 ```
 
-## Documentation
+---
 
-- [Architecture](docs/ARCHITECTURE.md)
-- [Setup Guide](docs/SETUP.md)
+## Docs
+
+- [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) — deployment topology, pipeline, components
+- [docs/SETUP.md](docs/SETUP.md) — installation, configuration, deployment
+
+---
+
+*Internal HPE use. Not for external distribution.*

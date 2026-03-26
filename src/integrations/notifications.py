@@ -1,279 +1,442 @@
-"""Notification integrations — Teams webhook + Email (SMTP).
-
-Sends a summary card / email when:
-  • A new draft is generated  (notify_draft_generated)
-  • A draft is approved       (notify_draft_approved)
-  • A draft is rejected       (notify_draft_rejected)
-
-Both channels are **optional** — if credentials are missing the call
-is silently skipped with a log message.
-"""
+"""Notification integrations — Teams webhook + Email (SMTP)."""
 
 from __future__ import annotations
 
 import logging
-import os
 import smtplib
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
-from typing import Optional
+from typing import Any, Optional
 
 import requests
 
 logger = logging.getLogger(__name__)
 
 
+# Teams Webhook Notifier
 class TeamsNotifier:
-    """Send notifications to a Microsoft Teams channel via Incoming Webhook."""
+    """Send AdaptiveCard notifications to Teams via incoming webhook."""
 
-    def __init__(self, webhook_url: Optional[str] = None):
-        self.webhook_url = webhook_url or os.getenv("TEAMS_WEBHOOK_URL", "")
+    def __init__(
+        self,
+        webhook_url: Optional[str] = None,
+        app_base_url: Optional[str] = None,
+        jira_base_url: Optional[str] = None,
+    ):
+        from src.config import settings as _settings
+        self._url = webhook_url
+        self._app_base_url = (app_base_url or _settings.app.base_url).rstrip("/")
+        self._jira_base_url = (jira_base_url or _settings.jira.base_url).rstrip("/")
+        if self._url:
+            logger.info("Teams notifier initialised (AdaptiveCard format)")
 
     @property
-    def is_configured(self) -> bool:
-        return bool(self.webhook_url)
+    def enabled(self) -> bool:
+        return bool(self._url)
 
-    def send(self, draft: dict) -> bool:
-        """Backward-compatible alias for draft-generated notifications."""
-        return self.send_event(draft, event_name="generated")
-
-    def send_event(
+    # Public API
+    def notify_draft_generated(
         self,
-        draft: dict,
-        *,
-        event_name: str,
-        actor: Optional[str] = None,
-        feedback: str = "",
+        draft_id: str,
+        issue_key: str,
+        classification: str,
+        confidence: float,
+        body_preview: str,
+        evidence_links: Optional[list[dict[str, str]]] = None,
+        missing_info: Optional[list[str]] = None,
     ) -> bool:
-        """Post an Adaptive Card to Teams with draft details.
-
-        Args:
-            draft: Draft dict with issue/comment metadata and generated content.
-
-        Returns:
-            True if the message was delivered, False otherwise.
-        """
-        if not self.is_configured:
-            logger.debug("Teams notifier not configured – skipping")
-            return False
-
-        issue_key = draft.get("issue_key", "unknown")
-        classification = draft.get("classification", draft.get("comment_type", "unknown"))
-        confidence = draft.get("confidence_score", 0)
-        draft_id = draft.get("draft_id", "")
-        body_preview = (
-            (draft.get("body", "")[:300] + "…")
-            if len(draft.get("body", "")) > 300
-            else draft.get("body", "")
+        """Send a 'new draft' AdaptiveCard to Teams with evidence, checklist, and action buttons."""
+        card = self._build_adaptive_card(
+            title=f"🤖 New Draft — {issue_key}",
+            facts={
+                "Draft ID": draft_id,
+                "Classification": classification.replace("_", " ").title(),
+                "Confidence": f"{confidence:.0%}",
+            },
+            body=body_preview[:500],
+            style="accent",
+            draft_id=draft_id,
+            issue_key=issue_key,
+            evidence_links=evidence_links,
+            missing_info=missing_info,
         )
+        return self._send(card)
 
-        event_label = {
-            "generated": "Draft Reply Ready",
-            "approved": "Draft Approved",
-            "rejected": "Draft Rejected",
-        }.get(event_name, "Draft Update")
+    def notify_draft_approved(
+        self,
+        draft_id: str,
+        issue_key: str,
+        approved_by: str,
+    ) -> bool:
+        """Send an ‘approved’ AdaptiveCard to Teams."""
+        card = self._build_adaptive_card(
+            title=f"Draft Approved — {issue_key}",
+            facts={
+                "Draft ID": draft_id,
+                "Approved by": approved_by,
+            },
+            body="The draft has been approved and posted to Jira.",
+            style="good",
+            draft_id=draft_id,
+            issue_key=issue_key,
+        )
+        return self._send(card)
 
-        card = {
+    def notify_draft_rejected(
+        self,
+        draft_id: str,
+        issue_key: str,
+        feedback: str,
+    ) -> bool:
+        """Send a ‘rejected’ AdaptiveCard to Teams."""
+        card = self._build_adaptive_card(
+            title=f"Draft Rejected — {issue_key}",
+            facts={
+                "Draft ID": draft_id,
+                "Feedback": feedback or "(none)",
+            },
+            body="The draft was rejected. See feedback above.",
+            style="attention",
+            draft_id=draft_id,
+            issue_key=issue_key,
+        )
+        return self._send(card)
+
+    # Internals
+    def _build_adaptive_card(
+        self,
+        title: str,
+        facts: dict[str, str],
+        body: str,
+        style: str = "accent",   # "accent"|"good"|"attention"|"warning"|"default"
+        draft_id: str = "",
+        issue_key: str = "",
+        evidence_links: Optional[list[dict[str, str]]] = None,
+        missing_info: Optional[list[str]] = None,
+    ) -> dict[str, Any]:
+        """Build a Teams AdaptiveCard payload."""
+        card_body: list[dict] = [
+            {
+                "type": "Container",
+                "style": style,
+                "items": [
+                    {
+                        "type": "TextBlock",
+                        "text": title,
+                        "weight": "Bolder",
+                        "size": "Medium",
+                        "wrap": True,
+                    },
+                    {
+                        "type": "FactSet",
+                        "facts": [
+                            {"title": k, "value": v} for k, v in facts.items()
+                        ],
+                    },
+                ],
+            },
+            {
+                "type": "TextBlock",
+                "text": body,
+                "wrap": True,
+                "spacing": "Medium",
+            },
+        ]
+
+        # Evidence links section
+        if evidence_links:
+            evidence_items: list[dict] = [
+                {
+                    "type": "TextBlock",
+                    "text": "📎 **Evidence**",
+                    "weight": "Bolder",
+                    "spacing": "Medium",
+                    "wrap": True,
+                },
+            ]
+            for ev in evidence_links[:5]:
+                source = ev.get("source", "")
+                url = ev.get("url", "")
+                excerpt = ev.get("excerpt", "")[:100]
+                link_text = f"[{source}]({url})" if url else source
+                evidence_items.append({
+                    "type": "TextBlock",
+                    "text": f"• {link_text}: {excerpt}",
+                    "wrap": True,
+                    "size": "Small",
+                })
+            card_body.append({
+                "type": "Container",
+                "items": evidence_items,
+            })
+
+        # "What's missing" checklist
+        if missing_info:
+            checklist_items: list[dict] = [
+                {
+                    "type": "TextBlock",
+                    "text": "⚠️ **What's Missing**",
+                    "weight": "Bolder",
+                    "spacing": "Medium",
+                    "wrap": True,
+                },
+            ]
+            for item in missing_info[:5]:
+                checklist_items.append({
+                    "type": "TextBlock",
+                    "text": f"☐ {item}",
+                    "wrap": True,
+                    "size": "Small",
+                })
+            card_body.append({
+                "type": "Container",
+                "items": checklist_items,
+            })
+
+        actions: list[dict] = []
+        if draft_id and self._app_base_url:
+            actions.append({
+                "type": "Action.OpenUrl",
+                "title": "📋 Review Draft",
+                "url": f"{self._app_base_url}/ui/drafts/{draft_id}",
+            })
+            actions.append({
+                "type": "Action.OpenUrl",
+                "title": "✅ Approve",
+                "url": f"{self._app_base_url}/ui/drafts/{draft_id}",
+            })
+            actions.append({
+                "type": "Action.OpenUrl",
+                "title": "❌ Reject",
+                "url": f"{self._app_base_url}/ui/drafts/{draft_id}",
+            })
+        if issue_key and self._jira_base_url:
+            actions.append({
+                "type": "Action.OpenUrl",
+                "title": "🔗 Open in Jira",
+                "url": f"{self._jira_base_url}/browse/{issue_key}",
+            })
+
+        return {
             "type": "message",
             "attachments": [
                 {
                     "contentType": "application/vnd.microsoft.card.adaptive",
+                    "contentUrl": None,
                     "content": {
                         "$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
                         "type": "AdaptiveCard",
                         "version": "1.4",
-                        "body": [
-                            {
-                                "type": "TextBlock",
-                                "size": "Medium",
-                                "weight": "Bolder",
-                                "text": f"{event_label} – {issue_key}",
-                            },
-                            {
-                                "type": "FactSet",
-                                "facts": [
-                                    {"title": "Event", "value": event_name},
-                                    {"title": "Issue", "value": issue_key},
-                                    {"title": "Classification", "value": classification},
-                                    {"title": "Confidence", "value": f"{confidence:.0%}"},
-                                    {"title": "Draft ID", "value": draft_id},
-                                ],
-                            },
-                            {
-                                "type": "TextBlock",
-                                "text": body_preview,
-                                "wrap": True,
-                                "maxLines": 6,
-                            },
-                        ],
+                        "body": card_body,
+                        "actions": actions,
                     },
                 }
             ],
         }
 
-        if actor:
-            card["attachments"][0]["content"]["body"].append(
-                {"type": "TextBlock", "text": f"By: {actor}", "wrap": True}
-            )
-        if feedback:
-            card["attachments"][0]["content"]["body"].append(
-                {"type": "TextBlock", "text": f"Feedback: {feedback[:300]}", "wrap": True}
-            )
-
+    def _send(self, payload: dict[str, Any]) -> bool:
+        """POST the payload to the Teams webhook URL."""
+        if not self._url:
+            logger.debug("Teams notifier disabled (no webhook URL)")
+            return False
         try:
             resp = requests.post(
-                self.webhook_url,
-                json=card,
+                self._url,
+                json=payload,
                 headers={"Content-Type": "application/json"},
                 timeout=10,
             )
-            if resp.status_code in (200, 202):
-                logger.info("Teams notification sent for %s", issue_key)
-                return True
-            logger.warning("Teams webhook returned %s: %s", resp.status_code, resp.text[:200])
-            return False
+            resp.raise_for_status()
+            logger.info("Teams notification sent")
+            return True
         except Exception as exc:
-            logger.error("Teams notification failed: %s", exc)
+            logger.warning("Teams notification failed: %s", exc)
             return False
 
-
+# Email Notifier
 class EmailNotifier:
-    """Send notification emails via SMTP."""
+    """Send plain-text + HTML email notifications via SMTP."""
 
     def __init__(
         self,
         smtp_host: Optional[str] = None,
-        smtp_port: Optional[int] = None,
+        smtp_port: int = 587,
         smtp_username: Optional[str] = None,
         smtp_password: Optional[str] = None,
-        email_from: Optional[str] = None,
-        email_to: Optional[str] = None,
+        from_address: Optional[str] = None,
+        to_addresses: Optional[list[str]] = None,
+        use_tls: bool = True,
     ):
-        self.smtp_host = smtp_host or os.getenv("SMTP_HOST", "")
-        self.smtp_port = smtp_port or int(os.getenv("SMTP_PORT", "587"))
-        self.smtp_username = smtp_username or os.getenv("SMTP_USERNAME", "")
-        self.smtp_password = smtp_password or os.getenv("SMTP_PASSWORD", "")
-        self.email_from = email_from or os.getenv("EMAIL_FROM", "")
-        self.email_to = email_to or os.getenv("EMAIL_TO", "")
+        self._host = smtp_host
+        self._port = smtp_port
+        self._username = smtp_username
+        self._password = smtp_password
+        self._from = from_address
+        self._to = to_addresses or []
+        self._use_tls = use_tls
+        if self._host:
+            logger.info("Email notifier initialised (host=%s)", self._host)
 
     @property
-    def is_configured(self) -> bool:
-        return bool(
-            self.smtp_host and self.smtp_username and self.smtp_password and self.email_from
-        )
+    def enabled(self) -> bool:
+        return bool(self._host and self._from and self._to)
 
-    def send(self, draft: dict) -> bool:
-        """Backward-compatible alias for draft-generated notifications."""
-        return self.send_event(draft, event_name="generated")
-
-    def send_event(
+    # Public API
+    def notify_draft_generated(
         self,
-        draft: dict,
-        *,
-        event_name: str,
-        actor: Optional[str] = None,
-        feedback: str = "",
+        draft_id: str,
+        issue_key: str,
+        classification: str,
+        confidence: float,
+        body_preview: str,
     ) -> bool:
-        """Send an email notification about a draft.
-
-        Args:
-            draft: Draft dict.
-
-        Returns:
-            True if email was sent, False otherwise.
-        """
-        if not self.is_configured:
-            logger.debug("Email notifier not configured – skipping")
-            return False
-
-        issue_key = draft.get("issue_key", "unknown")
-        classification = draft.get("classification", draft.get("comment_type", "unknown"))
-        confidence = draft.get("confidence_score", 0)
-        draft_id = draft.get("draft_id", "")
-        body_text = draft.get("body", "")
-
-        event_title = {
-            "generated": "Draft reply ready",
-            "approved": "Draft approved",
-            "rejected": "Draft rejected",
-        }.get(event_name, "Draft update")
-
-        recipients = [r.strip() for r in self.email_to.split(",") if r.strip()]
-        if not recipients:
-            logger.warning("No EMAIL_TO recipients configured")
-            return False
-
-        msg = MIMEMultipart("alternative")
-        msg["Subject"] = f"[Jira Assistant] {event_title} – {issue_key} ({classification})"
-        msg["From"] = self.email_from
-        msg["To"] = ", ".join(recipients)
-
-        text_body = (
-            f"A draft update was recorded for {issue_key}.\n\n"
-            f"Event: {event_name}\n"
-            f"Classification: {classification}\n"
-            f"Confidence: {confidence:.0%}\n"
-            f"Draft ID: {draft_id}\n\n"
-            f"--- Draft ---\n{body_text}\n"
+        subject = f"[Jira Assistant] New Draft — {issue_key}"
+        html = (
+            f"<h2>New Draft Generated</h2>"
+            f"<p><b>Issue:</b> {issue_key}<br>"
+            f"<b>Draft ID:</b> {draft_id}<br>"
+            f"<b>Classification:</b> {classification}<br>"
+            f"<b>Confidence:</b> {confidence:.0%}</p>"
+            f"<h3>Preview</h3><pre>{body_preview[:1000]}</pre>"
         )
+        return self._send_email(subject, html)
 
-        if actor:
-            text_body += f"\nActor: {actor}\n"
-        if feedback:
-            text_body += f"Feedback: {feedback}\n"
+    def notify_draft_approved(
+        self,
+        draft_id: str,
+        issue_key: str,
+        approved_by: str,
+    ) -> bool:
+        subject = f"[Jira Assistant] Draft Approved — {issue_key}"
+        html = (
+            f"<h2>Draft Approved</h2>"
+            f"<p><b>Issue:</b> {issue_key}<br>"
+            f"<b>Draft ID:</b> {draft_id}<br>"
+            f"<b>Approved by:</b> {approved_by}</p>"
+        )
+        return self._send_email(subject, html)
 
-        msg.attach(MIMEText(text_body, "plain"))
+    def notify_draft_rejected(
+        self,
+        draft_id: str,
+        issue_key: str,
+        feedback: str,
+    ) -> bool:
+        subject = f"[Jira Assistant] Draft Rejected — {issue_key}"
+        html = (
+            f"<h2>Draft Rejected</h2>"
+            f"<p><b>Issue:</b> {issue_key}<br>"
+            f"<b>Draft ID:</b> {draft_id}<br>"
+            f"<b>Feedback:</b> {feedback or '(none)'}</p>"
+        )
+        return self._send_email(subject, html)
 
+    # Internals
+    def _send_email(self, subject: str, html_body: str) -> bool:
+        """Send an HTML email via SMTP."""
+        if not self.enabled:
+            logger.debug("Email notifier disabled (missing config)")
+            return False
         try:
-            with smtplib.SMTP(self.smtp_host, self.smtp_port, timeout=15) as server:
-                server.starttls()
-                server.login(self.smtp_username, self.smtp_password)
-                server.sendmail(self.email_from, recipients, msg.as_string())
-            logger.info("Email notification sent for %s to %s", issue_key, recipients)
+            msg = MIMEMultipart("alternative")
+            msg["Subject"] = subject
+            msg["From"] = self._from
+            msg["To"] = ", ".join(self._to)
+
+            # Plain-text fallback
+            import re
+            plain = html_body.replace("<br>", "\n").replace("</p>", "\n")
+            plain = re.sub(r"<[^>]+>", "", plain)
+
+            msg.attach(MIMEText(plain, "plain"))
+            msg.attach(MIMEText(html_body, "html"))
+
+            with smtplib.SMTP(self._host, self._port) as server:
+                if self._use_tls:
+                    server.starttls()
+                if self._username and self._password:
+                    server.login(self._username, self._password)
+                server.sendmail(self._from, self._to, msg.as_string())
+
+            logger.info("Email notification sent to %s", self._to)
             return True
         except Exception as exc:
-            logger.error("Email notification failed: %s", exc)
+            logger.warning("Email notification failed: %s", exc)
             return False
 
 
-def notify_draft_ready(draft: dict) -> dict[str, bool]:
-    """Backward-compatible helper for generated-draft notifications."""
-    return notify_draft_event(draft, event_name="generated")
+# Notification Facade
+class NotificationService:
+    """Facade that fans out to Teams + Email (both optional)."""
 
+    def __init__(
+        self,
+        teams: Optional[TeamsNotifier] = None,
+        email: Optional[EmailNotifier] = None,
+    ):
+        self._teams = teams
+        self._email = email
 
-def notify_draft_event(
-    draft: dict,
-    *,
-    event_name: str,
-    actor: Optional[str] = None,
-    feedback: str = "",
-) -> dict[str, bool]:
-    """Send notifications on all configured channels.
-
-    Returns:
-        Dict mapping channel name to success boolean.
-    """
-    results: dict[str, bool] = {}
-
-    teams = TeamsNotifier()
-    if teams.is_configured:
-        results["teams"] = teams.send_event(
-            draft,
-            event_name=event_name,
-            actor=actor,
-            feedback=feedback,
+    @property
+    def any_enabled(self) -> bool:
+        return (
+            (self._teams is not None and self._teams.enabled)
+            or (self._email is not None and self._email.enabled)
         )
 
-    email = EmailNotifier()
-    if email.is_configured:
-        results["email"] = email.send_event(
-            draft,
-            event_name=event_name,
-            actor=actor,
-            feedback=feedback,
+    def notify_draft_generated(
+        self,
+        draft_id: str,
+        issue_key: str,
+        classification: str,
+        confidence: float,
+        body_preview: str,
+        evidence_links: Optional[list[dict[str, str]]] = None,
+        missing_info: Optional[list[str]] = None,
+    ) -> dict[str, bool]:
+        """Notify all enabled channels about a new draft."""
+        results: dict[str, bool] = {}
+        kwargs = dict(
+            draft_id=draft_id,
+            issue_key=issue_key,
+            classification=classification,
+            confidence=confidence,
+            body_preview=body_preview,
         )
+        if self._teams and self._teams.enabled:
+            results["teams"] = self._teams.notify_draft_generated(
+                **kwargs,
+                evidence_links=evidence_links,
+                missing_info=missing_info,
+            )
+        if self._email and self._email.enabled:
+            results["email"] = self._email.notify_draft_generated(**kwargs)
+        return results
 
-    if not results:
-        logger.info("No notification channels configured – draft stored only")
+    def notify_draft_approved(
+        self,
+        draft_id: str,
+        issue_key: str,
+        approved_by: str,
+    ) -> dict[str, bool]:
+        results: dict[str, bool] = {}
+        kwargs = dict(draft_id=draft_id, issue_key=issue_key, approved_by=approved_by)
+        if self._teams and self._teams.enabled:
+            results["teams"] = self._teams.notify_draft_approved(**kwargs)
+        if self._email and self._email.enabled:
+            results["email"] = self._email.notify_draft_approved(**kwargs)
+        return results
 
-    return results
+    def notify_draft_rejected(
+        self,
+        draft_id: str,
+        issue_key: str,
+        feedback: str,
+    ) -> dict[str, bool]:
+        results: dict[str, bool] = {}
+        kwargs = dict(draft_id=draft_id, issue_key=issue_key, feedback=feedback)
+        if self._teams and self._teams.enabled:
+            results["teams"] = self._teams.notify_draft_rejected(**kwargs)
+        if self._email and self._email.enabled:
+            results["email"] = self._email.notify_draft_rejected(**kwargs)
+        return results

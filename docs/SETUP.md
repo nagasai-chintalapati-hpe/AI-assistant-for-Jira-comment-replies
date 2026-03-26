@@ -4,247 +4,112 @@
 
 - Python 3.10+
 - Jira Cloud instance with API access
-- Copilot SDK API key for AI-powered classification & refinement (optional)
+- GitHub Copilot API key
 
 ## Install
 
 ```bash
-python3 -m venv .venv
-source .venv/bin/activate
+git clone git@github.com:nagasai-chintalapati-hpe/AI-assistant-for-Jira-comment-replies.git && cd AI-assistant-for-Jira-comment-replies
+python3 -m venv .venv && source .venv/bin/activate
 pip install -e ".[dev]"
 ```
 
-## Configure Environment
+## Configure
 
 ```bash
 cp .env.example .env
 ```
 
-Set these values in `.env`.
-
-### Required for live Jira use
+### Required
 
 | Variable | Description |
-|---|---|
-| `JIRA_BASE_URL` | Jira base URL, e.g. `https://your-org.atlassian.net` |
-| `JIRA_USERNAME` | Jira user email |
-| `JIRA_API_TOKEN` | Jira API token |
+|----------|-------------|
+| `JIRA_BASE_URL` | `https://your-org.atlassian.net` |
+| `JIRA_USERNAME` | Service-account email |
+| `JIRA_API_TOKEN` | Jira → Personal Settings → API tokens |
 
-#### Core Settings
+### LLM
 
-| Variable | Required | Description |
-|---|---|---|
-| `JIRA_BASE_URL` | Yes (for live Jira) | e.g. `https://your-org.atlassian.net` |
-| `JIRA_USERNAME` | Yes (for live Jira) | Your Jira email |
-| `JIRA_API_TOKEN` | Yes (for live Jira) | Generate in Jira → Personal Settings → API tokens |
-| `COPILOT_API_KEY` | No | Leave blank for keyword-only mode |
-| `COPILOT_MODEL` | No | Default: `gpt-4` |
-| `APP_PORT` | No | Default: `8000` |
-| `ASSISTANT_DB_PATH` | No | Default: `.data/assistant.db` |
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `LLM_BACKEND` | `copilot` | `copilot` / `local` / `none` |
+| `COPILOT_API_KEY` | — | GitHub Copilot API key |
+| `COPILOT_MODEL` | `gpt-4o` | Model name |
+| `LLM_MODEL_PATH` | — | `.gguf` file path (local backend) |
 
-#### Local LLM Settings
+### RAG
 
-| Variable | Required | Description |
-|---|---|---|
-| `LLM_BACKEND` | No | `copilot` (default) or `local` for llama.cpp |
-| `LLM_MODEL_PATH` | If `local` | Path to `.gguf` model file |
-| `LLM_N_CTX` | No | Context window size (default: `4096`) |
-| `LLM_N_GPU_LAYERS` | No | GPU layers (default: `0` = CPU only) |
-| `LLM_TEMPERATURE` | No | Default: `0.1` |
-| `LLM_MAX_TOKENS` | No | Default: `1024` |
-| `LLM_N_THREADS` | No | Default: `4` |
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `CHROMA_PERSIST_DIR` | `.data/chroma` | ChromaDB storage |
+| `RAG_EMBEDDING_MODEL` | `all-MiniLM-L6-v2` | Embedding model |
+| `RAG_TOP_K` | `5` | Snippets per query |
 
-#### RAG Settings
-
-| Variable | Required | Description |
-|---|---|---|
-| `CHROMA_PERSIST_DIR` | No | Default: `.data/chroma` |
-| `RAG_EMBEDDING_MODEL` | No | Default: `all-MiniLM-L6-v2` |
-| `RAG_CHUNK_SIZE` | No | Default: `500` chars |
-| `RAG_CHUNK_OVERLAP` | No | Default: `50` chars |
-| `RAG_TOP_K` | No | Default: `5` snippets |
-| `PDF_UPLOAD_DIR` | No | Default: `.data/pdfs` |
-
-#### Confluence Settings
-
-| Variable | Required | Description |
-|---|---|---|
-| `CONFLUENCE_BASE_URL` | No | Confluence Cloud URL |
-| `CONFLUENCE_USERNAME` | No | Confluence email |
-| `CONFLUENCE_API_TOKEN` | No | Confluence API token |
-| `CONFLUENCE_SPACES` | No | Comma-separated space keys to index |
-| `CONFLUENCE_LABELS` | No | Comma-separated labels to filter pages |
-
-#### TestRail Settings
-
-| Variable | Required | Description |
-|---|---|---|
-| `TESTRAIL_BASE_URL` | No | TestRail instance URL |
-| `TESTRAIL_USERNAME` | No | TestRail email |
-| `TESTRAIL_API_KEY` | No | TestRail API key |
-
-#### Log Lookup Settings
-
-| Variable | Required | Description |
-|---|---|---|
-| `JENKINS_BASE_URL` | No | Jenkins server URL |
-| `JENKINS_USERNAME` | No | Jenkins username |
-| `JENKINS_API_TOKEN` | No | Jenkins API token |
-| `LOG_DIR` | No | Local log directory path |
-| `LOG_TIME_WINDOW_HOURS` | No | Default: `24` |
-
-#### Notification Settings
-
-| Variable | Required | Description |
-|---|---|---|
-| `TEAMS_WEBHOOK_URL` | No | Teams incoming webhook URL for notifications |
-| `SMTP_HOST` | No | SMTP server hostname (leave blank to disable email) |
-| `SMTP_PORT` | No | Default: `587` |
-| `SMTP_USERNAME` | No | SMTP login username |
-| `SMTP_PASSWORD` | No | SMTP login password |
-| `EMAIL_FROM` | No | Sender email address |
-| `EMAIL_TO` | No | Comma-separated recipient addresses |
+### Integrations (all optional)
 
 | Variable | Description |
-|---|---|
-| `WEBHOOK_SECRET` | HMAC secret for webhook signature verification |
-| `APPROVAL_API_KEY` | Token required by `/approve` and `/reject` |
-| `ASSISTANT_DB_PATH` | SQLite file path for persistence/idempotency |
+|----------|-------------|
+| `CONFLUENCE_BASE_URL` / `CONFLUENCE_API_TOKEN` | Confluence Cloud |
+| `TESTRAIL_BASE_URL` / `TESTRAIL_API_KEY` | TestRail instance |
+| `GIT_PROVIDER` / `GIT_TOKEN` | `github` / `gitlab` / `bitbucket` + PAT |
+| `GIT_REPOS` | Comma-separated repos for multi-repo PR search |
+| `JENKINS_BASE_URL` / `JENKINS_API_TOKEN` | Jenkins server |
+| `ELK_HOST` / `ELK_API_KEY` | Elasticsearch / OpenSearch |
+| `S3_BUCKET` / `S3_ENDPOINT_URL` | S3 or MinIO |
+| `TEAMS_WEBHOOK_URL` | Teams incoming webhook |
+| `SMTP_HOST` / `EMAIL_FROM` / `EMAIL_TO` | Email notifications |
 
-### Optional
+### Infrastructure (optional)
 
-| Variable | Description |
-|---|---|
-| `COPILOT_API_KEY` | Enables LLM fallback/enhancement |
-| `COPILOT_MODEL` | Default: `claude-sonnet-4.5` |
-| `LLM_PROVIDER` | `copilot`, `llama_cpp`, `local`, or `openai_compat` |
-| `TEAMS_WEBHOOK_URL` | Teams notifications |
-| `SMTP_HOST`, `SMTP_PORT`, `SMTP_USERNAME`, `SMTP_PASSWORD`, `EMAIL_FROM`, `EMAIL_TO` | Email notifications |
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `RATE_LIMIT_RPM` | `60` | Webhook rate limit per IP |
+| `REDIS_ENABLED` | `false` | Distributed rate-limit state |
+| `QUEUE_ENABLED` | `false` | Async processing via RabbitMQ |
+| `RABBITMQ_URL` | `amqp://guest:guest@localhost/` | AMQP URL |
+| `DASHBOARD_TOKEN` | — | Lock dashboard behind a shared token |
+| `JIRA_WEBHOOK_SECRET` | — | HMAC secret (set `VALIDATE_WEBHOOK_SIGNATURE=true`) |
 
-## Run API
+## Run
 
-```bash
-uvicorn src.api.app:app --host 127.0.0.1 --port 8000
-```
-
-Health check:
-
-```bash
-curl -sS http://127.0.0.1:8000/health
-```
-
-## Run Tests
+### Docker (production)
 
 ```bash
-pytest -q
+docker compose up -d --build
 ```
 
-Coverage report:
+The container auto-restarts on crash/reboot and persists data via Docker volumes.
+
+| Task | Command |
+|------|---------|
+| View logs | `docker compose logs -f` |
+| Health check | `curl http://localhost:8000/health` |
+| Review UI | `http://localhost:8000/ui` |
+| Dashboard | `http://localhost:8000/dashboard` |
+| Deploy update | `git pull && docker compose up -d --build` |
+| Stop | `docker compose down` |
+
+## Register Jira Webhook
+
+1. Jira → **Settings → System → WebHooks → Create**
+2. URL: `https://<your-host>/webhook/jira`
+3. Events: ☑ Comment created
+4. Save
+
+## Tests
 
 ```bash
-pytest --cov=src --cov-report=term-missing --cov-report=html
-open htmlcov/index.html
+pytest tests/unit/ -v              # unit tests
+pytest tests/unit/ --cov=src       # with coverage
+pytest tests/integration/ -v       # requires live credentials
 ```
-
-## API Endpoints
-
-- `GET /health`
-- `POST /webhook/jira`
-- `GET /drafts`
-- `GET /drafts/{draft_id}`
-- `POST /approve`
-- `POST /reject`
-
-## Security Headers
-
-When `WEBHOOK_SECRET` is configured, send one of:
-
-- `X-Hub-Signature-256: sha256=<hex-digest>`
-- `X-Webhook-Signature: <hex-digest>`
-
-When `APPROVAL_API_KEY` is configured, include:
-
-- `X-Approval-Token: <APPROVAL_API_KEY>`
-
-## Local Webhook Test
-
-```bash
-# Simulate a "cannot reproduce" comment
-curl -X POST http://localhost:8000/webhook/jira \
-  -H "Content-Type: application/json" \
-  -d '{
-    "webhookEvent": "comment_created",
-    "timestamp": 1700000001,
-    "issue": {
-      "id": "1", "key": "DEFECT-500",
-      "fields": {
-        "summary": "Upload crash",
-        "issuetype": {"name": "Bug"},
-        "status": {"name": "Open"}
-      }
-    },
-    "comment": {
-      "id": "90001",
-      "body": "Cannot reproduce this on my machine.",
-      "author": {"accountId": "u1", "displayName": "Dev", "emailAddress": "dev@co.com"},
-      "created": "2025-02-23T10:30:00.000+0000",
-      "updated": "2025-02-23T10:30:00.000+0000"
-    }
-  }'
-
-# List drafts
-curl http://localhost:8000/drafts
-
-# Approve a draft
-curl -X POST http://localhost:8000/approve \
-  -H "Content-Type: application/json" \
-  -d '{"draft_id": "<DRAFT_ID>", "approved_by": "qa@company.com"}'
-
-# Ingest a text document into RAG
-curl -X POST http://localhost:8000/rag/ingest/text \
-  -H "Content-Type: application/json" \
-  -d '{"title": "Auth Runbook", "text": "Check SSO config when login fails...", "source_type": "runbook"}'
-
-# Search the RAG index
-curl "http://localhost:8000/rag/search?q=login+failure&top_k=3"
-
-# RAG collection stats
-curl http://localhost:8000/rag/stats
-```
-
-## Optional: RAG Dependencies
-
-The RAG engine and document ingestion pipeline require additional packages
-that are **not** installed by default (they are only needed if you use the
-`/rag/*` endpoints):
-
-```bash
-pip install chromadb sentence-transformers pypdf
-```
-
-- **chromadb** — vector store for semantic retrieval
-- **sentence-transformers** — embedding model (`all-MiniLM-L6-v2`)
-- **pypdf** — PDF text extraction
-
-The core pipeline (webhook → classify → context → draft) works without
-these packages.  Tests mock all heavy dependencies so `pytest` runs
-without installing them.
 
 ## Troubleshooting
 
-### Missing Jira config
-
-Set `JIRA_BASE_URL`, `JIRA_USERNAME`, and `JIRA_API_TOKEN` in `.env`.
-
-### Missing/invalid webhook signature
-
-Ensure `WEBHOOK_SECRET` matches, and sign the raw payload with HMAC-SHA256.
-
-### Missing/invalid approval token
-
-Set `APPROVAL_API_KEY`, and send `X-Approval-Token` for approve/reject calls.
-
-### Notifications not sending
-
-- Teams: verify `TEAMS_WEBHOOK_URL`
-- Email: verify SMTP variables and sender/recipient fields
+| Problem | Fix |
+|---------|-----|
+| Webhook 400 (signature mismatch) | Set `VALIDATE_WEBHOOK_SIGNATURE=false` for local dev |
+| ChromaDB empty after ingest | Check `CHROMA_PERSIST_DIR` is writable |
+| Confidence always 0.0 | Set `LLM_BACKEND=copilot` and add `COPILOT_API_KEY` |
+| Teams card not appearing | Verify `TEAMS_WEBHOOK_URL` is an Incoming Webhook URL |
+| Import errors | Run `pip install -e .` and confirm venv is active |

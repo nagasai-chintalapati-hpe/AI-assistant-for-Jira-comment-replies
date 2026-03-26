@@ -1,0 +1,13 @@
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+htmlcov/
+.data/
+*.db
+*.log
+tests/
+docs/
+.env
+.git/
+*.gguf
