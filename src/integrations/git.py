@@ -156,6 +156,129 @@ class GitClient:
                     pass
         return sorted(found)
 
+    def search_prs_by_issue_key(
+        self,
+        issue_key: str,
+        repo: Optional[str] = None,
+        max_prs: int = 3,
+    ) -> list[GitPRMetadata]:
+        """Search for PRs whose branch name or title contains the Jira issue key.
+
+        This catches the common convention where developers name branches
+        like ``feature/IP-15-fix-crash`` or PR titles like ``IP-15: Fix crash``.
+
+        When *repo* is ``None`` and no ``GIT_REPO`` is configured the search
+        runs across the entire GitHub owner/org.
+        """
+        if not self.enabled or not issue_key:
+            return []
+
+        try:
+            resolved_repo = self._resolve_repo(repo)
+        except ValueError:
+            resolved_repo = None
+
+        if self._provider == "github":
+            return self._search_github_prs_by_key(issue_key, resolved_repo, max_prs)
+        if self._provider == "gitlab":
+            if not resolved_repo:
+                return []
+            return self._search_gitlab_mrs_by_key(issue_key, resolved_repo, max_prs)
+        # Bitbucket Cloud doesn't have a search-by-branch PR API — skip
+        return []
+
+    def _search_github_prs_by_key(
+        self, issue_key: str, repo: Optional[str], max_prs: int,
+    ) -> list[GitPRMetadata]:
+        """GitHub: use the search/issues endpoint to find PRs mentioning the key.
+
+        Builds a cascade of search scopes from most specific (single repo)
+        to broadest (global, no scope qualifier).  The global fallback is
+        essential for GitHub Enterprise / SAML-protected orgs where
+        ``org:`` and ``user:`` qualifiers may 422.
+        """
+        url = f"{self._base_url}/search/issues"
+
+        # Build scopes: most specific → broadest
+        scopes: list[str] = []
+        if repo:
+            owner, name = self._split_repo(repo)
+            scopes.append(f"repo:{owner}/{name}")
+        else:
+            owner = self._owner
+
+        scopes.append(f"org:{owner}")    # works for GitHub orgs
+        scopes.append(f"user:{owner}")   # works for personal accounts
+
+        # Also search every org the token has access to
+        for org_login in self._get_accessible_orgs():
+            scope = f"org:{org_login}"
+            if scope not in scopes:
+                scopes.append(scope)
+
+        # Final fallback: global search (no scope qualifier) — works even
+        # when org/user scopes 422 due to SAML enforcement
+        scopes.append("")
+
+        results: list[GitPRMetadata] = []
+        seen_keys: set[str] = set()
+
+        for scope in scopes:
+            if len(results) >= max_prs:
+                break
+            query = f"{issue_key} {scope} type:pr".strip()
+            try:
+                data = self._get(url, params={"q": query, "per_page": max_prs})
+                for item in (data.get("items") or [])[:max_prs]:
+                    pr_number = item.get("number")
+                    # Extract repo from the PR's html_url
+                    html_url = item.get("html_url", "")
+                    pr_repo = self._repo_from_html_url(html_url) or repo
+                    dedup_key = f"{pr_repo}#{pr_number}"
+                    if not pr_number or dedup_key in seen_keys:
+                        continue
+                    seen_keys.add(dedup_key)
+                    try:
+                        pr = self.get_pr(pr_number, repo=pr_repo)
+                        results.append(pr)
+                    except Exception as exc:
+                        logger.debug("Failed to fetch searched PR #%d: %s", pr_number, exc)
+                # If we found results in this scope, no need to widen
+                if results:
+                    break
+            except Exception as exc:
+                logger.debug("GitHub PR search scope %r for %s failed: %s", scope, issue_key, exc)
+                continue
+
+        if not results:
+            logger.info("No GitHub PRs found for %s across scopes %s", issue_key, scopes)
+        return results[:max_prs]
+
+    @staticmethod
+    def _repo_from_html_url(html_url: str) -> Optional[str]:
+        """Extract 'owner/repo' from a GitHub PR html_url."""
+        m = re.match(r"https?://github\.com/([^/]+/[^/]+)/pull/", html_url)
+        return m.group(1) if m else None
+
+    def _search_gitlab_mrs_by_key(
+        self, issue_key: str, repo: str, max_prs: int,
+    ) -> list[GitPRMetadata]:
+        """GitLab: search MRs by title/branch containing the issue key."""
+        encoded = repo.replace("/", "%2F")
+        url = f"{self._base_url}/api/v4/projects/{encoded}/merge_requests"
+        try:
+            data = self._get(url, params={"search": issue_key, "per_page": max_prs})
+            results: list[GitPRMetadata] = []
+            for item in (data if isinstance(data, list) else [])[:max_prs]:
+                try:
+                    results.append(self._get_gitlab_mr(item["iid"], repo))
+                except Exception:
+                    pass
+            return results
+        except Exception as exc:
+            logger.warning("GitLab MR search for %s failed: %s", issue_key, exc)
+            return []
+
     def fetch_prs_for_issue(
         self,
         issue_text: str,
@@ -191,48 +314,71 @@ class GitClient:
         comment_texts: Optional[list[str]] = None,
         repos: Optional[list[str]] = None,
         max_prs_per_repo: int = 3,
+        issue_key: Optional[str] = None,
     ) -> tuple[list[GitPRMetadata], list[str]]:
-        """Fan out PR search across multiple repositories."""
+        """Fan out PR search across multiple repositories.
+
+        First tries explicit PR references in issue text/comments.
+        Falls back to searching by issue key in branch names and titles.
+        """
         if not self.enabled:
             return [], []
 
         target_repos = repos or self.configured_repos
         if not target_repos:
-            # Fall back to single-repo behaviour
-            prs = self.fetch_prs_for_issue(
-                issue_text, comment_texts, max_prs=max_prs_per_repo
-            )
-            fallback_repo = (
-                self._repo
-                if "/" in (self._repo or "")
-                else f"{self._owner}/{self._repo}"
-            ) if self._repo else ""
-            return prs, [fallback_repo] if fallback_repo else []
+            # No specific repos configured — do an org/user-wide search
+            prs: list[GitPRMetadata] = []
+            if issue_key:
+                # search_prs_by_issue_key handles repo=None by doing
+                # org/user-wide search across ALL repos
+                prs = self.search_prs_by_issue_key(
+                    issue_key, repo=None, max_prs=max_prs_per_repo,
+                )
+            repos_label = f"{self._owner}/*"
+            return prs, [repos_label]
 
         all_text = issue_text or ""
         for c in (comment_texts or []):
             all_text += " " + c
 
         pr_numbers = self.detect_pr_refs(all_text)
-        if not pr_numbers:
-            return [], target_repos
 
         all_prs: list[GitPRMetadata] = []
         seen_keys: set[str] = set()  # "repo#number" dedup
 
-        for repo in target_repos:
-            for num in pr_numbers[:max_prs_per_repo]:
-                key = f"{repo}#{num}"
-                if key in seen_keys:
-                    continue
+        if pr_numbers:
+            # Explicit PR references found — fetch them from each repo
+            for repo in target_repos:
+                for num in pr_numbers[:max_prs_per_repo]:
+                    key = f"{repo}#{num}"
+                    if key in seen_keys:
+                        continue
+                    try:
+                        pr = self.get_pr(num, repo=repo)
+                        all_prs.append(pr)
+                        seen_keys.add(key)
+                    except Exception as exc:
+                        # PR doesn't exist in this repo — expected
+                        logger.debug(
+                            "PR #%d not found in %s: %s", num, repo, exc
+                        )
+
+        # Fallback: search by Jira issue key in branch/title
+        if not all_prs and issue_key:
+            for repo in target_repos:
                 try:
-                    pr = self.get_pr(num, repo=repo)
-                    all_prs.append(pr)
-                    seen_keys.add(key)
+                    found = self.search_prs_by_issue_key(
+                        issue_key, repo=repo, max_prs=max_prs_per_repo,
+                    )
+                    for pr in found:
+                        key = f"{pr.repo}#{pr.pr_number}"
+                        if key not in seen_keys:
+                            all_prs.append(pr)
+                            seen_keys.add(key)
                 except Exception as exc:
-                    # PR doesn't exist in this repo — expected
                     logger.debug(
-                        "PR #%d not found in %s: %s", num, repo, exc
+                        "Issue-key PR search failed for %s in %s: %s",
+                        issue_key, repo, exc,
                     )
 
         logger.info(
@@ -369,6 +515,28 @@ class GitClient:
         if len(parts) != 2:
             raise ValueError(f"Expected 'owner/repo' format, got: {repo!r}")
         return parts[0], parts[1]
+
+    def _get_accessible_orgs(self) -> list[str]:
+        """Return org logins the authenticated token has access to (GitHub only).
+
+        Results are cached after the first call to avoid repeated API calls.
+        """
+        if self._provider != "github":
+            return []
+        if hasattr(self, "_cached_orgs"):
+            return self._cached_orgs  # type: ignore[has-type]
+        try:
+            orgs_data = self._get(f"{self._base_url}/user/orgs")
+            self._cached_orgs: list[str] = [
+                o["login"] for o in (orgs_data if isinstance(orgs_data, list) else [])
+                if o.get("login")
+            ]
+            logger.info("GitHub accessible orgs: %s", self._cached_orgs)
+            return self._cached_orgs
+        except Exception as exc:
+            logger.debug("Failed to list GitHub orgs: %s", exc)
+            self._cached_orgs = []
+            return []
 
     def _patterns_for_provider(self) -> list[re.Pattern]:
         if self._provider == "gitlab":
