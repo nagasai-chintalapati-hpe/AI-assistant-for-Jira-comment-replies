@@ -1,4 +1,4 @@
-"""Draft Review UI routes."""
+"""Draft Review UI routes — list, review, approve, reject, theme toggle."""
 
 from __future__ import annotations
 
@@ -7,18 +7,17 @@ from pathlib import Path
 from typing import Optional
 
 from fastapi import APIRouter, Form, HTTPException, Request
-from fastapi.responses import RedirectResponse, JSONResponse
+from fastapi.responses import JSONResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 
 from src.api.deps import draft_store, _jira_client
-from src.models.draft import DraftStatus
 from src.config import settings
+from src.models.draft import DraftStatus
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
 
-# Templates directory — src/api/templates/
-_ui_dir = Path(__file__).parent.parent  # src/api/
+_ui_dir = Path(__file__).parent.parent
 _templates = Jinja2Templates(directory=str(_ui_dir / "templates"))
 
 
@@ -153,8 +152,19 @@ async def ui_api_drafts(
 
 @router.get("/ui/api/drafts/{draft_id}")
 async def ui_api_draft_detail(draft_id: str):
-    """JSON endpoint for single-draft polling (auto-refresh review page)."""
+    """JSON endpoint for single-draft polling."""
     draft = draft_store.get(draft_id)
     if draft is None:
         raise HTTPException(status_code=404, detail="Draft not found")
     return JSONResponse(draft)
+
+
+@router.post("/ui/theme")
+async def toggle_theme(request: Request):
+    """Toggle the UI colour theme between dark and light via cookie."""
+    current = request.cookies.get("hpe-ui-theme", "dark")
+    new_theme = "light" if current == "dark" else "dark"
+    referer = request.headers.get("referer", "/ui")
+    response = RedirectResponse(url=referer, status_code=303)
+    response.set_cookie("hpe-ui-theme", new_theme, max_age=365 * 24 * 3600)
+    return response
