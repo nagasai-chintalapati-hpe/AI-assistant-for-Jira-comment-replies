@@ -54,7 +54,7 @@ async def _orchestrate(event: JiraWebhookEvent) -> dict:
     assert event.comment is not None
     assert event.issue is not None
 
-    # 1. Build Comment model from webhook event
+    # Build Comment model from webhook event
     comment = Comment(
         comment_id=event.comment.id,
         issue_key=event.issue.key,
@@ -80,7 +80,7 @@ async def _orchestrate(event: JiraWebhookEvent) -> dict:
         body=event.comment.body,
     )
 
-    # 2. Redact PII
+    # Redact PII
     _redaction = redact_with_stats(comment.body)
     _redaction_count = _redaction.redaction_count
     if _redaction_count > 0:
@@ -91,7 +91,7 @@ async def _orchestrate(event: JiraWebhookEvent) -> dict:
         )
         comment = comment.model_copy(update={"body": _redaction.text})
 
-    # 3. Classify
+    # Classify
     classification = classifier.classify(comment)
     logger.info(
         "Classified %s comment %s → %s (%.2f)",
@@ -101,20 +101,20 @@ async def _orchestrate(event: JiraWebhookEvent) -> dict:
         classification.confidence,
     )
 
-    # 4. Context collection (deferred if Jira creds not configured)
+    # Context collection
     context = _collect_context_safe(comment.issue_key)
 
-    # 4b. Duplicate detection — scan past drafts on the same issue
+    # Duplicate detection
     _dup_result = _duplicate_detector.check(
         comment_body=comment.body,
         issue_key=comment.issue_key,
         draft_store=draft_store,
     )
 
-    # 4c. Pattern detection — check for 3+ open issues on same component/version
+    # Pattern detection
     _pattern_note = _detect_pattern(context)
 
-    # 4d. Severity challenge — detect Rovo severity changes, counter-assess
+    # Severity challenge
     _severity_result = _severity_challenger.evaluate(
         context,
         pattern_note=_pattern_note,
@@ -129,10 +129,10 @@ async def _orchestrate(event: JiraWebhookEvent) -> dict:
             _severity_result.recommended_severity,
         )
 
-    # 4e. Multi-repo tracking (stashed by context collector)
-    _repos_searched = getattr(context, "_repos_searched", None)
+    # Multi-repo tracking
+    _repos_searched = context.repos_searched
 
-    # 5. Draft response
+    # Draft response
     draft = drafter.draft(
         comment,
         classification,
@@ -152,10 +152,10 @@ async def _orchestrate(event: JiraWebhookEvent) -> dict:
         draft.redaction_count,
     )
 
-    # 6. Store (persistent SQLite)
+    # Store in persistent SQLite
     draft_store.save(draft, classification=classification.comment_type.value)
 
-    # 7. Notify human reviewers via Approval Service (Teams / Email) with draft details
+    # Notify human reviewers
     notifier.notify_draft_generated(
         draft_id=draft.draft_id,
         issue_key=comment.issue_key,

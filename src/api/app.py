@@ -9,40 +9,32 @@ from pathlib import Path
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.staticfiles import StaticFiles
 
-from src.config import settings
-from src.models.draft import DraftStatus
-
-# Singletons - defined in deps.py; imported here so that:
-#   (a) tests can do  ``from src.api.app import app, draft_store, ...``
-#   (b) _jira_client lives in THIS module's __dict__ for mock-patching
 from src.api.deps import (
-    draft_store,
-    _idempotency_store,
-    event_filter,
-    _jira_client,
-    notifier,
     _broker,
-    _teams,
     _email,
+    _jira_client,
+    _teams,
+    draft_store,
+    notifier,
 )
 from src.api.orchestrator import _sync_queue_handler
-from src.api.routes import webhook as _webhook_routes
-from src.api.routes import drafts as _drafts_routes
-from src.api.routes import rag as _rag_routes
-from src.api.routes import health as _health_routes
 from src.api.routes import admin as _admin_routes
-from src.api.routes import ui as _ui_routes
 from src.api.routes import dashboard as _dashboard_routes
+from src.api.routes import drafts as _drafts_routes
+from src.api.routes import health as _health_routes
+from src.api.routes import rag as _rag_routes
+from src.api.routes import ui as _ui_routes
+from src.api.routes import webhook as _webhook_routes
+from src.config import settings
+from src.models.draft import DraftStatus
 
 logger = logging.getLogger(__name__)
 
 
 # Application lifespan
-
-
 @asynccontextmanager
 async def lifespan(app_instance: FastAPI):
-    """Startup / shutdown lifecycle."""
+    """Startup and shutdown lifecycle hooks."""
     channels = []
     if _teams.enabled:
         channels.append("Teams")
@@ -62,7 +54,7 @@ async def lifespan(app_instance: FastAPI):
     logger.info("Jira Comment Assistant API stopped")
 
 
-# FastAPI application instance
+# --- FastAPI application instance ---
 
 app = FastAPI(
     title="Jira Comment Assistant",
@@ -71,13 +63,9 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-# Static assets for the Draft Review UI
+# Static assets (CSS, images)
 _ui_dir = Path(__file__).parent
-app.mount(
-    "/static",
-    StaticFiles(directory=_ui_dir / "static"),
-    name="static",
-)
+app.mount("/static", StaticFiles(directory=_ui_dir / "static"), name="static")
 
 # Route modules
 app.include_router(_webhook_routes.router)
@@ -89,12 +77,9 @@ app.include_router(_ui_routes.router)
 app.include_router(_dashboard_routes.router)
 
 
-# POST /approve lives here (not routes/drafts.py) for mock-patching compatibility.
-
-
 @app.post("/approve")
 async def approve_draft(request: Request):
-    """Approve a draft and optionally post to Jira."""
+    """Approve a draft and optionally post it to Jira."""
     try:
         payload = await request.json()
         draft_id = payload.get("draft_id")
@@ -116,7 +101,7 @@ async def approve_draft(request: Request):
         issue_key = draft_data.get("issue_key", "")
         jira_posted = False
 
-        # Action executor - post to Jira only on explicit approval
+        # Post to Jira only on explicit approval
         if post_to_jira and _jira_client is not None:
             try:
                 body = draft_data.get("body", "")

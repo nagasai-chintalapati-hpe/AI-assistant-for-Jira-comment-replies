@@ -1,4 +1,4 @@
-"""Notification integrations — Teams webhook + Email (SMTP)."""
+"""Notification integrations — Teams webhook and SMTP email."""
 
 from __future__ import annotations
 
@@ -13,7 +13,6 @@ import requests
 logger = logging.getLogger(__name__)
 
 
-# Teams Webhook Notifier
 class TeamsNotifier:
     """Send AdaptiveCard notifications to Teams via incoming webhook."""
 
@@ -253,7 +252,7 @@ class TeamsNotifier:
             logger.warning("Teams notification failed: %s", exc)
             return False
 
-# Email Notifier
+
 class EmailNotifier:
     """Send plain-text + HTML email notifications via SMTP."""
 

@@ -1,4 +1,4 @@
-"""Data models and schemas"""
+"""Data models and schemas."""
 
 from .comment import Comment
 from .context import IssueContext, ContextCollectionResult

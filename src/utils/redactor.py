@@ -1,19 +1,17 @@
-"""PII and secret redactor."""
+"""PII and secret redactor — scrubs sensitive patterns before LLM processing."""
 
 from __future__ import annotations
 
 import re
 from dataclasses import dataclass
 
-# Compiled patterns 
-
 _PATTERNS: list[tuple[re.Pattern, str]] = [
-    # Authorization
+    # Authorization headers
     (
         re.compile(r"(?i)(Authorization:\s*Bearer\s+)\S+"),
         r"\1[REDACTED]",
     ),
-    #  key=value pairs 
+    # Key=value credential pairs
     (
         re.compile(
             r"(?i)"
@@ -52,9 +50,6 @@ class RedactionResult:
     redacted_length: int
     redaction_count: int
     text: str
-
-
-# Public API
 
 
 def redact(text: str) -> str:

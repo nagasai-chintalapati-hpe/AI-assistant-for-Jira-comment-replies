@@ -1,4 +1,4 @@
-"""Admin maintenance routes."""
+"""Admin maintenance routes for draft management."""
 
 from __future__ import annotations
 

@@ -1,1 +1,1 @@
-# Route modules for the Jira Comment Assistant API.
+"""Route modules for the Jira Comment Assistant API."""

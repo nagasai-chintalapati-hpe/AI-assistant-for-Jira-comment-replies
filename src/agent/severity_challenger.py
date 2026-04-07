@@ -12,7 +12,7 @@ from src.models.context import ContextCollectionResult
 
 logger = logging.getLogger(__name__)
 
-# Priority / severity ranking (higher number = more critical)
+# Priority / severity ranking (higher = more critical)
 
 _SEVERITY_RANK: dict[str, int] = {
     "blocker": 5,
@@ -38,8 +38,6 @@ _SEVERITY_RANK: dict[str, int] = {
 }
 
 # Rovo comment-body severity change patterns
-# Real-world example from "Automation for Jira":
-#   "The work item's Severity has been changed from P0 Critical to P1 High"
 _ROVO_COMMENT_SEVERITY_PATTERNS = [
     # "Severity has been changed from P0 Critical to P1 High"
     re.compile(
@@ -60,7 +58,7 @@ _ROVO_COMMENT_SEVERITY_PATTERNS = [
     ),
 ]
 
-# Outage / escalation keywords (case-insensitive)
+# Outage / escalation keywords
 
 _OUTAGE_KEYWORDS = [
     "outage", "p0", "p1", "sev1", "sev-1", "customer escalation",

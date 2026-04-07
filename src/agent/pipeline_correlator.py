@@ -10,8 +10,6 @@ from typing import Any, Optional
 logger = logging.getLogger(__name__)
 
 
-#  Data models 
-
 @dataclass
 class PipelineEvent:
     """A single event in the CI/CD pipeline timeline."""
@@ -76,10 +74,8 @@ class PipelineCorrelation:
         return evidence
 
 
-#  Correlator service 
-
 class BuildPipelineCorrelator:
-    """Correlates a Jira issue across the CI/CD pipeline.  """
+    """Correlates a Jira issue across the CI/CD pipeline."""
 
     def __init__(
         self,

@@ -1,4 +1,4 @@
-"""Shared singletons for the API."""
+"""Shared singletons wired up at import time for the API layer."""
 
 from __future__ import annotations
 
@@ -6,42 +6,42 @@ import logging
 import os
 from typing import Optional
 
-from src.api.security import _RateLimiter
-from src.config import settings
-from src.storage.sqlite_store import SQLiteDraftStore, SQLiteIdempotencyStore
-from src.api.event_filter import EventFilter
 from src.agent.classifier import CommentClassifier
 from src.agent.drafter import ResponseDrafter
+from src.api.event_filter import EventFilter
+from src.api.security import _RateLimiter
+from src.config import settings
+from src.integrations.confluence import ConfluenceClient
+from src.integrations.git import GitClient
+from src.integrations.jenkins import JenkinsClient
+from src.integrations.jira import JiraClient
+from src.integrations.log_lookup import LogLookupService
 from src.integrations.notifications import (
-    TeamsNotifier,
     EmailNotifier,
     NotificationService,
+    TeamsNotifier,
 )
-from src.integrations.log_lookup import LogLookupService
-from src.integrations.testrail import TestRailClient
-from src.integrations.jira import JiraClient
-from src.integrations.git import GitClient
 from src.integrations.s3_connector import S3ArtifactFetcher
-from src.integrations.jenkins import JenkinsClient
-from src.integrations.confluence import ConfluenceClient
-from src.queue.broker import MessageBroker
+from src.integrations.testrail import TestRailClient
 from src.llm.client import get_llm_client
+from src.queue.broker import MessageBroker
+from src.storage.sqlite_store import SQLiteDraftStore, SQLiteIdempotencyStore
 
 logger = logging.getLogger(__name__)
 
-#  Persistent stores 
+# --- Persistent stores ---
 
 draft_store = SQLiteDraftStore(db_path=settings.app.db_path)
 _idempotency_store = SQLiteIdempotencyStore(db_path=settings.app.db_path)
 event_filter = EventFilter(idempotency_store=_idempotency_store)
 
-#  LLM / Classifier / Drafter 
+# --- LLM / Classifier / Drafter ---
 
 _llm_client = get_llm_client()
 classifier = CommentClassifier(llm_client=_llm_client)
 drafter = ResponseDrafter(llm_client=_llm_client)
 
-# Tooling layer connectors (each degrades gracefully when unconfigured) ─
+# --- Integration connectors (each degrades gracefully when unconfigured) ---
 
 _log_lookup = LogLookupService()
 _testrail_client = TestRailClient()
@@ -73,11 +73,11 @@ except Exception:
 
 _broker = MessageBroker()
 
-# Rate limiter (per IP, Redis-backed or in-memory) 
+# --- Rate limiter (per-IP, Redis-backed or in-memory) ---
 
 _rate_limiter = _RateLimiter(rpm=settings.rate_limit.max_requests_per_minute)
 
-#  Notification channels (Teams Email) 
+# --- Notification channels (Teams / Email) ---
 
 _teams = TeamsNotifier(webhook_url=os.getenv("TEAMS_WEBHOOK_URL"))
 _email = EmailNotifier(
@@ -94,7 +94,7 @@ _email = EmailNotifier(
 )
 notifier = NotificationService(teams=_teams, email=_email)
 
-#  RAG pipeline 
+# --- RAG pipeline (lazy-initialised) ---
 
 _rag_engine = None
 _rag_ingester = None

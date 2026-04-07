@@ -87,9 +87,6 @@ class DuplicateDetector:
         hits: list[SimilarDraft] = []
 
         for d in past:
-            # Prefer comparing against the original triggering comment
-            # (comment-to-comment is much more accurate than comment-to-draft
-            # because draft bodies are long templates that dilute Jaccard scores).
             compare_text = d.get("trigger_comment_body") or d.get("body", "")
             sim = _jaccard(comment_tokens, _tokenize(compare_text))
             if sim >= self._threshold:

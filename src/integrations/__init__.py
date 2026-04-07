@@ -1,1 +1,1 @@
-"""External service integrations"""
+"""External service integrations."""
