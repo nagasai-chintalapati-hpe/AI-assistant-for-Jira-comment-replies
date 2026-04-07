@@ -1,8 +1,9 @@
-"""Unified LLM client — GitHub Copilot API or local llama.cpp."""
+"""Unified LLM client — GitHub Copilot API or local llama.cpp backend."""
 
 from __future__ import annotations
 
 import logging
+import time
 from typing import Optional
 
 from src.config import settings
@@ -26,7 +27,7 @@ class CopilotLLMClient:
         else:
             self._init_copilot()
 
-    # Backend initialisation
+    # --- Backend initialisation ---
     def _init_copilot(self) -> None:
         """Set up the GitHub Copilot API client (OpenAI-compatible SDK)."""
         api_key = settings.copilot.api_key
@@ -86,19 +87,15 @@ class CopilotLLMClient:
             )
             self._init_copilot()
 
-    # Properties
-
     @property
     def enabled(self) -> bool:
-        """True when any backend is available."""
+        """True when any LLM backend is available."""
         return self._openai_client is not None or self._local_llm is not None
 
     @property
     def backend(self) -> str:
         """Active backend identifier: ``'copilot'`` | ``'local'`` | ``'none'``."""
         return self._active_backend
-
-    # Public API
 
     def complete(
         self,
@@ -117,25 +114,39 @@ class CopilotLLMClient:
             return self._complete_copilot(messages, _max, _temp)
         return None
 
-    # Private dispatch
-
     def _complete_copilot(
         self,
         messages: list[dict],
         max_tokens: int,
         temperature: float,
     ) -> Optional[str]:
-        try:
-            resp = self._openai_client.chat.completions.create(  # type: ignore[union-attr]
-                model=settings.copilot.model,
-                messages=messages,
-                max_tokens=max_tokens,
-                temperature=temperature,
-            )
-            return resp.choices[0].message.content.strip()
-        except Exception as exc:
-            logger.warning("Copilot API completion failed: %s", exc)
-            return None
+        max_retries = settings.llm.max_retries
+        for attempt in range(max_retries + 1):
+            try:
+                resp = self._openai_client.chat.completions.create(  # type: ignore[union-attr]
+                    model=settings.copilot.model,
+                    messages=messages,
+                    max_tokens=max_tokens,
+                    temperature=temperature,
+                )
+                return resp.choices[0].message.content.strip()
+            except Exception as exc:
+                exc_str = str(exc)
+                is_rate_limit = "429" in exc_str or "RateLimit" in exc_str
+                if is_rate_limit and attempt < max_retries:
+                    wait = min(2 ** attempt * 2, 30)
+                    logger.info(
+                        "Rate limited (attempt %d/%d) — retrying in %ds",
+                        attempt + 1, max_retries, wait,
+                    )
+                    time.sleep(wait)
+                    continue
+                logger.warning(
+                    "Copilot API completion failed (attempt %d/%d): %s",
+                    attempt + 1, max_retries + 1, exc,
+                )
+                return None
+        return None
 
     def _complete_local(
         self,
@@ -154,8 +165,6 @@ class CopilotLLMClient:
             logger.warning("Local LLM completion failed: %s", exc)
             return None
 
-
-# Module-level singleton
 
 _singleton: Optional[CopilotLLMClient] = None
 
