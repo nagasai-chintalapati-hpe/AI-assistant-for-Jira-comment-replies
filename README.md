@@ -4,7 +4,10 @@
 
 A **FastAPI** service that listens for Jira webhooks, classifies comments into intent buckets, collects evidence from TestRail, Git, Jenkins, Confluence, and S3, then drafts a structured reply for human approval.
 
-**Authors:** Nagasai Chintalapati · Yousef Konswah · Vinnarasu Ganesan — HPE 2026
+**Authors:** 
+- Nagasai Chintalapati — nagasai.chintalapati@hpe.com
+- Yousef Konswah — yousef.konswah@hpe.com
+- Vinnarasu Ganesan — vinnarasu.ganesan@hpe.com
 
 ---
 
@@ -217,7 +220,7 @@ src/
 ---
 
 ## Docs
-
+- [Confluence Page](https://hpe.atlassian.net/wiki/spaces/DETET/pages/4432135084/AI+assistant+for+Jira+comment+replies) — project overview on Confluence
 - [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) — deployment topology, pipeline, components
 - [docs/SETUP.md](docs/SETUP.md) — installation, configuration, deployment
 
