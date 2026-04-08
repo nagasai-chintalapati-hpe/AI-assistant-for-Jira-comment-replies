@@ -1,4 +1,4 @@
-"""Draft retrieval and rejection routes."""
+"""Draft retrieval and rejection API routes."""
 
 from __future__ import annotations
 

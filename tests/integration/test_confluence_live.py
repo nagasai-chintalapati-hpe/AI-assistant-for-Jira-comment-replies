@@ -21,13 +21,23 @@ pytestmark = pytest.mark.skipif(
 
 SPACE_KEY = os.getenv("CONFLUENCE_SPACES", "")
 KNOWN_PAGE_ID = "4632839656"
-KNOWN_PAGE_TITLE = "AI assistant for Jira comment replies Home"
+# The page title may change over time — fetch it dynamically in fixtures
+KNOWN_PAGE_TITLE: str | None = None
 
 
 @pytest.fixture(scope="module")
 def confluence():
     """Module-scoped ConfluenceClient."""
     return ConfluenceClient()
+
+
+@pytest.fixture(scope="module", autouse=True)
+def _resolve_known_page_title(confluence):
+    """Look up the real title of the known page so tests stay stable."""
+    global KNOWN_PAGE_TITLE
+    page = confluence.get_page(KNOWN_PAGE_ID)
+    if page:
+        KNOWN_PAGE_TITLE = page.get("title")
 
 
 class TestConfluenceConnection:
@@ -44,6 +54,7 @@ class TestConfluenceConnection:
     def test_search_returns_known_page(self, confluence):
         pages = confluence.search_pages(space_key=SPACE_KEY)
         titles = [p["title"] for p in pages]
+        assert KNOWN_PAGE_TITLE is not None, "Could not resolve known page title"
         assert KNOWN_PAGE_TITLE in titles
 
 

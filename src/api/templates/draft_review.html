@@ -20,6 +20,51 @@
 
 <p class="text-muted small mb-3 ms-1">{{ draft.classification_reasoning or '' }}</p>
 
+<!-- Integration Context -->
+{% set testrail_cites = (draft.citations or []) | selectattr('type', 'equalto', 'testrail') | list %}
+{% set git_cites      = (draft.citations or []) | selectattr('type', 'equalto', 'git_pr')   | list %}
+{% set confl_cites    = (draft.citations or []) | selectattr('type', 'equalto', 'confluence')| list %}
+{% set jenkins_cites  = (draft.citations or []) | selectattr('type', 'equalto', 'jenkins')  | list %}
+{% set rag_cites      = (draft.citations or []) | rejectattr('type', 'in', ['testrail','git_pr','confluence','jenkins']) | list %}
+
+{% if testrail_cites or git_cites or confl_cites or jenkins_cites or rag_cites %}
+<div class="card mb-4" style="border-left:4px solid var(--hpe-green);">
+  <div class="card-header">
+    <span class="evidence-header">Integration Context</span>
+    <small class="text-muted ms-2">— collected before draft generation</small>
+  </div>
+  <div class="card-body py-2">
+    <div class="row g-2">
+      {% if testrail_cites %}
+      <div class="col-auto">
+        <span class="badge bg-success bg-opacity-25 text-success">TestRail <strong>{{ testrail_cites|length }}</strong></span>
+      </div>
+      {% endif %}
+      {% if confl_cites %}
+      <div class="col-auto">
+        <span class="badge bg-info bg-opacity-25 text-info">Confluence <strong>{{ confl_cites|length }}</strong></span>
+      </div>
+      {% endif %}
+      {% if git_cites %}
+      <div class="col-auto">
+        <span class="badge bg-dark bg-opacity-25">GitHub PRs <strong>{{ git_cites|length }}</strong></span>
+      </div>
+      {% endif %}
+      {% if jenkins_cites %}
+      <div class="col-auto">
+        <span class="badge bg-warning bg-opacity-25 text-warning">Jenkins <strong>{{ jenkins_cites|length }}</strong></span>
+      </div>
+      {% endif %}
+      {% if rag_cites %}
+      <div class="col-auto">
+        <span class="badge bg-secondary bg-opacity-25">Knowledge Base <strong>{{ rag_cites|length }}</strong></span>
+      </div>
+      {% endif %}
+    </div>
+  </div>
+</div>
+{% endif %}
+
 <div class="row g-3">
 
   <!-- ─── Left Column: Draft + Actions ─── -->
@@ -247,26 +292,27 @@
           <span class="badge bg-secondary ms-1">{{ draft.citations|length }}</span>
         </span>
       </div>
-      <ul class="list-group list-group-flush">
-        {% for c in draft.citations %}
-        <li class="list-group-item small">
-          <div class="d-flex align-items-center gap-1 mb-1">
-            <span class="fw-semibold text-secondary">{{ c.source }}</span>
-            {% if c.type %}
-            <span class="badge bg-light text-dark border font-xxs">{{ c.type }}</span>
+      <div class="evidence-scroll">
+        <ul class="list-group list-group-flush">
+          {% for c in draft.citations %}
+          <li class="list-group-item small">
+            <div class="d-flex align-items-center gap-1 mb-1">
+              {% if c.url %}
+              <a href="{{ c.url }}" target="_blank" class="fw-semibold text-decoration-none">{{ c.source }}</a>
+              {% else %}
+              <span class="fw-semibold text-secondary">{{ c.source }}</span>
+              {% endif %}
+              {% if c.type %}
+              <span class="badge bg-light text-dark border font-xxs">{{ c.type }}</span>
+              {% endif %}
+            </div>
+            {% if c.excerpt %}
+            <span class="text-muted font-caption">{{ c.excerpt[:200] }}</span>
             {% endif %}
-          </div>
-          {% if c.url %}
-          <a href="{{ c.url }}" target="_blank" class="text-break small d-block mb-1">
-            {{ c.url[:80] }}{% if c.url|length > 80 %}…{% endif %}
-          </a>
-          {% endif %}
-          {% if c.excerpt %}
-          <span class="text-muted font-caption">{{ c.excerpt[:200] }}</span>
-          {% endif %}
-        </li>
-        {% endfor %}
-      </ul>
+          </li>
+          {% endfor %}
+        </ul>
+      </div>
     </div>
     {% endif %}
 
@@ -279,11 +325,13 @@
           <span class="badge bg-secondary ms-1">{{ draft.evidence_used|length }}</span>
         </span>
       </div>
-      <ul class="list-group list-group-flush">
-        {% for e in draft.evidence_used %}
-        <li class="list-group-item small text-muted">{{ e }}</li>
-        {% endfor %}
-      </ul>
+      <div class="evidence-scroll" style="max-height:180px">
+        <ul class="list-group list-group-flush">
+          {% for e in draft.evidence_used %}
+          <li class="list-group-item small text-muted">{{ e | urlize(target='_blank') }}</li>
+          {% endfor %}
+        </ul>
+      </div>
     </div>
     {% endif %}
 

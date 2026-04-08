@@ -255,7 +255,7 @@ class TestRailClient:
             return None
         return self.get_run_summary(runs[0]["id"])
 
-    #  By-marker retrieval 
+    # By-marker retrieval
 
     def get_tests_by_marker(
         self,

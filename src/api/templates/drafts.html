@@ -9,12 +9,18 @@
   <div class="d-flex align-items-center gap-2">
     <span class="badge total-badge">{{ total }} total</span>
     {% if total > 0 %}
-    <button id="clearAllBtn" class="btn btn-sm btn-outline-danger" data-total="{{ total }}">Clear All</button>
+    <details class="d-inline-block position-relative">
+      <summary class="btn btn-sm btn-outline-danger">Clear All</summary>
+      <div class="clear-confirm-panel">
+        <p class="mb-2 small">Delete all <strong>{{ total }}</strong> drafts? This cannot be undone.</p>
+        <form method="post" action="/ui/clear-all">
+          <button type="submit" class="btn btn-sm btn-danger">Confirm Delete</button>
+        </form>
+      </div>
+    </details>
     {% endif %}
   </div>
 </div>
-
-<form id="clearForm" method="post" action="/ui/clear-all" class="d-none"></form>
 
 <!-- Filters -->
 <div class="filter-bar">
@@ -77,7 +83,7 @@
   {% endfor %}
 </div>
 {% else %}
-<div class="empty-state" id="emptyState">
+<div class="empty-state">
   <p>No drafts found</p>
   <small>Fire a Jira webhook to generate your first draft reply.</small>
 </div>

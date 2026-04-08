@@ -1,4 +1,4 @@
-"""Draft generator — templates + Copilot SDK refinement."""
+"""Draft response generator — template filling + LLM refinement."""
 
 from __future__ import annotations
 import logging
@@ -16,26 +16,19 @@ logger = logging.getLogger(__name__)
 # Response templates per classification bucket
 TEMPLATES: dict[CommentType, str] = {
     CommentType.CANNOT_REPRODUCE: (
-        "Thanks for the update. We were able to reproduce on "
+        "Thanks for the update. We were able to reproduce this on "
         "**{environment}** (Build {build_version}).\n\n"
-        "**Observed:** {observation}\n\n"
-        "**Repro steps (minimal):**\n{repro_steps}\n\n"
-        "{pr_evidence}"
         "Could you confirm:\n"
         "• Which build/version did you test on?\n"
-        "• Your environment (OS, browser, tenant config)?\n"
-        "• Whether feature flag `{feature_flag}` is enabled?\n\n"
-        "**Next:** If you share your test env/build, we can validate parity; "
-        "otherwise we recommend retesting on the latest staging build."
+        "• Your environment details (OS, browser, tenant config)?\n\n"
+        "**Next:** Share your test environment so we can validate parity, "
+        "or retest on the latest staging build."
     ),
     CommentType.NEED_MORE_INFO: (
-        "Thanks for flagging this. Here's what we already have:\n"
-        "{existing_evidence}\n\n"
+        "Thanks for flagging this. We've reviewed the available evidence "
+        "but need more detail to narrow down the root cause.\n\n"
         "We're still missing:\n{missing_items}\n\n"
-        "Could you please provide:\n"
-        "• Exact repro steps + correlation IDs\n"
-        "• Logs for **{component}** in the time window **{time_window}**\n\n"
-        "Once we have this, we'll be able to narrow down the root cause."
+        "Please provide the above so we can proceed with investigation."
     ),
     CommentType.BY_DESIGN: (
         "Thanks for raising this. Based on the specification, this is "
@@ -48,8 +41,7 @@ TEMPLATES: dict[CommentType, str] = {
     ),
     CommentType.FIXED_VALIDATE: (
         "A fix has been deployed.\n\n"
-        "**Fix version/commit/build:** {fix_version}\n"
-        "{pr_evidence}"
+        "**Fix version/commit/build:** {fix_version}\n\n"
         "**Focused retest checklist:**\n{retest_checklist}\n\n"
         "Please verify in **{target_env}** and update the ticket status."
     ),
@@ -88,28 +80,33 @@ TEMPLATES: dict[CommentType, str] = {
         "provide updated logs and we'll re-investigate."
     ),
     CommentType.OTHER: (
-        "Thank you for your comment. We're reviewing this and will "
-        "follow up shortly.\n\n"
-        "**Issue:** {issue_key} – {summary}"
+        "Thanks for the update on **{issue_key}** – *{summary}*\n\n"
+        "Based on our review, here is our assessment and recommended next steps."
     ),
 }
 
 _REFINE_SYSTEM = """\
-You are a senior QA engineer writing a reply to a comment on a Jira defect ticket.
+You are a senior QA engineer at HPE writing a reply to a developer's comment on a Jira defect ticket.
 
-Your job is to rewrite the DRAFT below into a professional, concise, and helpful reply.
+Your job is NOT to parrot the draft template. Use the TICKET DESCRIPTION, DEVELOPER COMMENT, CLASSIFICATION, and EVIDENCE to write a substantive, issue-aware reply that demonstrates you understand the specific defect.
 
-Rules:
-1. Ground every claim in the EVIDENCE provided — do NOT invent facts, builds, links, or test results.
-2. Reference specific evidence (PR numbers, TestRail pass rates, log excerpts, Jenkins builds) when available.
-3. Replace generic placeholders like "N/A", "See attached evidence", or "TBD" with real data from the EVIDENCE, or remove the line entirely if no data exists.
-4. Keep the tone professional, empathetic, and action-oriented.
-5. If evidence is thin, honestly say what's missing and ask for it.
-6. Keep the reply concise — no filler paragraphs.
-7. Output ONLY the final reply — no markdown code fences, no explanation, no preamble.
+Structure:
+1. One-line acknowledgment that names the specific issue (not generic).
+2. Your assessment: what the evidence tells you about this defect — root cause hypothesis, affected versions/components, scope of impact. Be specific to THIS issue.
+3. Targeted questions: ask 2-3 precise technical questions that would help resolve THIS defect (not generic "is it still happening?" questions). Reference specific details from the description.
+4. Clear next step: one concrete action for the developer.
+
+Strict rules:
+- DO NOT list attachment filenames, Confluence excerpts, PR descriptions, Jenkins URLs, or TestRail tables. The reviewer sees those in a separate evidence panel.
+- You may reference evidence briefly ("a related PR is open", "TestRail shows 95% pass rate") but never paste raw data.
+- Ground claims in EVIDENCE — never invent builds, versions, PRs, or test results.
+- Remove any line with "N/A", "TBD", or placeholders — if you lack data, omit it.
+- Keep it under 150 words. Be direct and assertive.
+- Use bullet points for lists of 2+ items.
+- Do NOT wrap in markdown code fences. Output ONLY the reply text.
 """
 
-# Suggested-action and label mappings
+# Suggested-action and label mappings per classification
 _ACTION_MAP: dict[CommentType, list[dict[str, str]]] = {
     CommentType.FIXED_VALIDATE: [{"action": "transition", "value": "Ready for QA"}],
     CommentType.CANNOT_REPRODUCE: [{"action": "request_info", "value": "environment"},
@@ -161,11 +158,19 @@ class ResponseDrafter:
         """Generate a draft response for the given comment and context."""
         template_body = self._fill_template(comment, classification, context)
         if self._llm.enabled:
-            draft_body = self._refine_with_copilot(
+            refined = self._refine_with_copilot(
                 template_body, comment, classification, context,
-            ) or template_body
+            )
+            if refined:
+                draft_body = refined
+            else:
+                logger.warning(
+                    "LLM refinement failed for %s — using template fallback",
+                    comment.issue_key,
+                )
+                draft_body = self._clean_template_output(template_body)
         else:
-            draft_body = template_body
+            draft_body = self._clean_template_output(template_body)
 
         citations = self._build_citations(context)
         evidence_used = self._build_evidence_used(context)
@@ -199,7 +204,30 @@ class ResponseDrafter:
             repos_searched=repos_searched,
         )
 
-    # LLM refinement
+    # Template cleanup
+
+    @staticmethod
+    def _clean_template_output(text: str) -> str:
+        """Strip placeholder lines so raw templates read cleanly without LLM."""
+        _placeholder_tokens = (
+            "N/A", "TBD", "(documentation link needed)",
+            "(check with dev team)", "(refer to acceptance criteria in ticket)",
+            "(pending — please provide ETA)",
+            "(please share the correct configuration steps)",
+            "(please specify the original ticket)",
+            "(please specify the blocking issue)",
+            "(pending investigation)", "(unknown)",
+        )
+        cleaned: list[str] = []
+        for line in text.splitlines():
+            if any(tok in line for tok in _placeholder_tokens):
+                continue
+            cleaned.append(line)
+        result = "\n".join(cleaned)
+        result = re.sub(r"\n{3,}", "\n\n", result)
+        return result.strip()
+
+    # LLM refine
 
     def _refine_with_copilot(self, draft_text, comment, classification, context):
         """Polish the template-filled draft using Copilot LLM."""
@@ -231,11 +259,11 @@ class ResponseDrafter:
                 {"role": "system", "content": _REFINE_SYSTEM},
                 {"role": "user", "content": user_prompt},
             ],
-            max_tokens=800,
-            temperature=0.3,
+            max_tokens=600,
+            temperature=0.15,
         )
 
-    # Hallucination detection
+    # Hallucination check
 
     @staticmethod
     def _detect_hallucination(body: str, citations: list[dict[str, str]]) -> bool:
@@ -252,7 +280,7 @@ class ResponseDrafter:
         logger.warning("Hallucination flag — claims without evidence citations")
         return True
 
-    # Template filling
+    # Fill template
 
     def _fill_template(self, comment, classification, context):
         """Select and fill the template for the classification type."""
@@ -267,25 +295,31 @@ class ResponseDrafter:
         )
         env = ctx.environment or self._extract_env_from_text(ctx.description, comment.body) or "N/A"
 
+        component = ctx.components[0] if ctx.components else "the affected component"
+        fix_ver = bm.get("version") or (ctx.versions[0] if ctx.versions else None) or build_ver
+        related = self._find_related_ticket(ctx)
+        blocker = self._find_blocking_item(ctx)
+
         subs = {
             "issue_key": ctx.issue_key, "summary": ctx.summary,
             "environment": env, "build_version": build_ver,
-            "observation": "See attached evidence",
-            "repro_steps": "1. (auto-detected from ticket – please verify)",
-            "feature_flag": "N/A",
-            "component": ctx.components[0] if ctx.components else "N/A",
+            "observation": "See evidence below" if self._format_existing_evidence(context) != "• (none collected yet)" else "(pending investigation)",
+            "repro_steps": "1. Follow the steps described in the ticket",
+            "feature_flag": "(check with dev team)",
+            "component": component,
             "time_window": "last 24 h",
             "existing_evidence": self._format_existing_evidence(context),
             "missing_items": self._format_missing(classification),
-            "doc_link": "N/A", "expected_behavior": "See referenced documentation",
-            "fix_version": bm.get("version") or (ctx.versions[0] if ctx.versions else None) or build_ver,
+            "doc_link": "(documentation link needed)",
+            "expected_behavior": "(refer to acceptance criteria in ticket)",
+            "fix_version": fix_ver,
             "retest_checklist": self._build_retest_checklist(context),
-            "target_env": env if env != "N/A" else "staging",
-            "related_ticket": self._find_related_ticket(ctx),
-            "related_status": "See linked ticket",
-            "blocking_item": self._find_blocking_item(ctx),
-            "expected_resolution": "TBD – pending dependency update",
-            "expected_config": "See documentation",
+            "target_env": env if env not in ("N/A", "") else "staging",
+            "related_ticket": related if related != "N/A" else "(please specify the original ticket)",
+            "related_status": "See linked ticket" if related != "N/A" else "(unknown)",
+            "blocking_item": blocker if blocker != "N/A" else "(please specify the blocking issue)",
+            "expected_resolution": "(pending — please provide ETA)",
+            "expected_config": "(please share the correct configuration steps)",
             "pr_evidence": self._format_pr_evidence(context),
             "elk_log_preview": self._format_elk_preview(context),
         }
@@ -295,7 +329,7 @@ class ResponseDrafter:
             logger.warning("Template substitution key missing: %s", exc)
             return template
 
-    # Evidence formatters
+    # Evidence format
 
     @staticmethod
     def _format_pr_evidence(context: ContextCollectionResult) -> str:
@@ -306,6 +340,8 @@ class ResponseDrafter:
             sha = f" (commit `{pr.merge_commit_sha}`)" if pr.merge_commit_sha else ""
             branch = f" `{pr.head_branch}` → `{pr.base_branch}`" if pr.head_branch else ""
             lines.append(f"• PR #{pr.pr_number} [{pr.state}]{sha}{branch}: [{pr.pr_title}]({pr.pr_url})")
+            if pr.description:
+                lines.append(f"  _{pr.description[:200]}_")
         return "\n".join(lines) + "\n\n"
 
     @staticmethod
@@ -328,6 +364,8 @@ class ResponseDrafter:
         for url in (context.jenkins_links or [])[:3]:
             lines.append(f"• Jenkins log: {url}")
         for s in (context.rag_snippets or [])[:3]:
+            if s.relevance_score < 0.40:
+                continue
             lines.append(f"• [{s.source_title}] ({s.relevance_score:.0%}): {s.content[:120].replace(chr(10), ' ')}…")
         for e in (context.log_entries or [])[:3]:
             lines.append(f"• Log ({e.source}): {e.message[:100].replace(chr(10), ' ')}…")
@@ -335,10 +373,18 @@ class ResponseDrafter:
             lines.append(f"• TestRail [{tr.get('name', 'run')}]: {tr.get('pass_rate', 0)}% pass, {tr.get('failed', 0)} failed")
         for pr in (context.git_prs or [])[:3]:
             sha = f" (commit `{pr.merge_commit_sha}`)" if pr.merge_commit_sha else ""
-            lines.append(f"• Git PR #{pr.pr_number} [{pr.state}]{sha}: {pr.pr_title} — {pr.pr_url}")
+            raw_desc = ResponseDrafter._strip_html_comments(pr.description) if pr.description else ""
+            desc = f" — {raw_desc[:120]}" if raw_desc else ""
+            lines.append(f"• Git PR #{pr.pr_number} [{pr.state}]{sha}: {pr.pr_title} — {pr.pr_url}{desc}")
         for e in (context.elk_log_entries or [])[:3]:
             lvl = f"[{e.level}] " if e.level else ""
             lines.append(f"• ELK log: {lvl}{e.message[:100].replace(chr(10), ' ')}…")
+        for cc in (context.confluence_citations or [])[:3]:
+            src = cc.get('source', 'Confluence page')
+            excerpt = cc.get('excerpt', '')[:120].replace(chr(10), ' ')
+            url = cc.get('url', '')
+            url_part = f" — {url}" if url else ""
+            lines.append(f"• {src}: {excerpt}…{url_part}")
         return "\n".join(lines) if lines else "• (none collected yet)"
 
     @staticmethod
@@ -372,6 +418,10 @@ class ResponseDrafter:
                 return link.get("key", "N/A")
         return ctx.linked_issues[0].get("key", "N/A")
 
+    _IP_PATTERN = re.compile(
+        r"^(?:127\.|10\.|172\.(?:1[6-9]|2\d|3[01])\.|192\.168\.|0\.0\.0\.0|255\.)"
+    )
+
     @staticmethod
     def _extract_build_from_text(*texts: str) -> Optional[str]:
         """Extract a build/version number from free-form text."""
@@ -385,7 +435,10 @@ class ResponseDrafter:
         ]:
             m = re.search(pat, combined, re.IGNORECASE)
             if m:
-                return m.group(1)
+                candidate = m.group(1)
+                if ResponseDrafter._IP_PATTERN.match(candidate):
+                    continue
+                return candidate
         return None
 
     @staticmethod
@@ -400,7 +453,15 @@ class ResponseDrafter:
         m = re.search(r"\b(production|staging|qa|uat|dev|preprod|pre-prod|sandbox)\b", combined, re.IGNORECASE)
         return m.group(1) if m else None
 
-    # Citations and evidence
+    # Citations
+
+    @staticmethod
+    def _strip_html_comments(text: str) -> str:
+        """Remove HTML comments (including unclosed ones) and collapse whitespace."""
+        cleaned = re.sub(r'<!--.*?-->', '', text, flags=re.DOTALL)
+        cleaned = re.sub(r'<!--.*', '', cleaned, flags=re.DOTALL)
+        cleaned = re.sub(r'\s{2,}', ' ', cleaned).strip()
+        return cleaned
 
     @staticmethod
     def _build_citations(context: ContextCollectionResult) -> list[dict[str, str]]:
@@ -409,7 +470,13 @@ class ResponseDrafter:
         for url in context.jenkins_links or []:
             c.append({"source": "Jenkins", "url": url, "type": "jenkins"})
         for s in context.rag_snippets or []:
-            entry: dict[str, str] = {"source": s.source_title, "type": s.source_type, "excerpt": s.content[:200]}
+            if s.relevance_score < 0.40:
+                continue
+            entry: dict[str, str] = {
+                "source": s.source_title,
+                "type": s.source_type,
+                "excerpt": s.content[:200],
+            }
             if s.source_url:
                 entry["url"] = s.source_url
             c.append(entry)
@@ -422,8 +489,10 @@ class ResponseDrafter:
         for pr in context.git_prs or []:
             sha = f" | merged commit {pr.merge_commit_sha}" if pr.merge_commit_sha else ""
             branch = f" | branch {pr.head_branch} → {pr.base_branch}" if pr.head_branch else ""
+            raw_desc = ResponseDrafter._strip_html_comments(pr.description) if pr.description else ""
+            desc_snippet = f" | {raw_desc[:120]}" if raw_desc else ""
             c.append({"source": f"Git PR #{pr.pr_number} ({pr.provider})", "url": pr.pr_url,
-                       "type": "git_pr", "excerpt": f"{pr.state} — {pr.pr_title}{sha}{branch}"})
+                       "type": "git_pr", "excerpt": f"{pr.state} — {pr.pr_title}{sha}{branch}{desc_snippet}"})
         for e in (context.elk_log_entries or [])[:5]:
             cid = f" [{e.correlation_id}]" if e.correlation_id else ""
             c.append({"source": f"ELK log{cid}", "excerpt": e.message[:200], "type": "elk"})
@@ -463,14 +532,16 @@ class ResponseDrafter:
         for url in context.jenkins_links or []:
             ev.append(f"Jenkins log: {url}")
         for s in context.rag_snippets or []:
-            label = f"{s.source_type.title()}: {s.source_title}"
-            if s.relevance_score >= 0.5:
-                label += f" (relevance: {s.relevance_score:.0%})"
+            if s.relevance_score < 0.40:
+                continue
+            label = f"{s.source_type.title()}: {s.source_title} ({s.relevance_score:.0%} match)"
             ev.append(label)
         for e in (context.log_entries or [])[:5]:
             ev.append(f"Log ({e.source}): {e.correlation_id or e.source}")
         for tr in context.testrail_results or []:
-            ev.append(f"TestRail run: {tr.get('name', 'unknown')} ({tr.get('pass_rate', 0)}% pass)")
+            url = tr.get('url', '')
+            label = f"TestRail run: {tr.get('name', 'unknown')} ({tr.get('pass_rate', 0)}% pass)"
+            ev.append(f"{label} — {url}" if url else label)
         if context.build_metadata:
             bm = context.build_metadata
             parts = [p for p in [f"commit {bm['commit']}" if bm.get("commit") else None,
@@ -481,12 +552,16 @@ class ResponseDrafter:
             label = f"Git PR #{pr.pr_number} ({pr.state}): {pr.pr_title}"
             if pr.merge_commit_sha:
                 label += f" — commit {pr.merge_commit_sha}"
+            if pr.description:
+                label += f" — {pr.description[:100]}"
             ev.append(label)
         for e in (context.elk_log_entries or [])[:5]:
             ev.append(f"ELK log ({e.level or 'INFO'}): {e.correlation_id or 'elk'}")
         for tr in context.testrail_marker_results or []:
-            ev.append(f"TestRail (marker={tr.get('marker', '')}): {tr.get('name', 'run')} "
-                       f"({tr.get('pass_rate', 0)}% pass, {tr.get('total', 0)} tests)")
+            url = tr.get('url', '')
+            label = (f"TestRail (marker={tr.get('marker', '')}): {tr.get('name', 'run')} "
+                     f"({tr.get('pass_rate', 0)}% pass, {tr.get('total', 0)} tests)")
+            ev.append(f"{label} — {url}" if url else label)
         for cc in context.confluence_citations or []:
             ev.append(f"Confluence: {cc.get('source', 'page')}")
         if context.jenkins_test_report:
@@ -498,7 +573,9 @@ class ResponseDrafter:
             ev.append(f"Jenkins console: {errs.get('error_count', 0)} errors, "
                        f"{errs.get('exception_count', 0)} exceptions")
         for b in (context.jenkins_build_info or [])[:3]:
-            ev.append(f"Jenkins build #{b.get('build_number', '?')}: {b.get('result', '?')}")
+            url = b.get('url', '')
+            label = f"Jenkins build #{b.get('build_number', '?')}: {b.get('result', '?')}"
+            ev.append(f"{label} — {url}" if url else label)
         if context.pipeline_correlation:
             pc = context.pipeline_correlation
             ev.append(f"Pipeline correlation: {pc.get('jenkins_build_count', 0)} builds, "
@@ -508,7 +585,7 @@ class ResponseDrafter:
             ev.append(f"S3 artifact: {art.get('key', 'unknown')}")
         return ev
 
-    # Suggested labels
+    # Labels
 
     @staticmethod
     def _suggest_actions(classification: CommentClassification) -> list[dict[str, str]]:

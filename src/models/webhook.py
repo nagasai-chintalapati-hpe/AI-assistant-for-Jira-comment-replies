@@ -1,4 +1,4 @@
-"""Webhook event models for Jira incoming payloads"""
+"""Webhook event models for incoming Jira payloads."""
 
 from typing import Optional, Any, Union
 from pydantic import BaseModel, Field, field_validator

@@ -12,7 +12,7 @@ from src.models.context import ContextCollectionResult
 
 logger = logging.getLogger(__name__)
 
-# Priority / severity ranking (higher number = more critical)
+# Severity ranking
 
 _SEVERITY_RANK: dict[str, int] = {
     "blocker": 5,
@@ -37,9 +37,7 @@ _SEVERITY_RANK: dict[str, int] = {
     "trivial": 0,
 }
 
-# Rovo comment-body severity change patterns
-# Real-world example from "Automation for Jira":
-#   "The work item's Severity has been changed from P0 Critical to P1 High"
+# Rovo change patterns
 _ROVO_COMMENT_SEVERITY_PATTERNS = [
     # "Severity has been changed from P0 Critical to P1 High"
     re.compile(
@@ -60,7 +58,7 @@ _ROVO_COMMENT_SEVERITY_PATTERNS = [
     ),
 ]
 
-# Outage / escalation keywords (case-insensitive)
+# Outage keywords
 
 _OUTAGE_KEYWORDS = [
     "outage", "p0", "p1", "sev1", "sev-1", "customer escalation",
@@ -83,7 +81,7 @@ _TITLE_SEVERITY_MARKERS = [
     (re.compile(r"\[.*?hotfix.*?\]", re.IGNORECASE), 4),
 ]
 
-# Rovo-specific author patterns (Atlassian Intelligence / Rovo agent)
+# Rovo author patterns
 _ROVO_AUTHOR_PATTERNS = [
     re.compile(r"rovo", re.IGNORECASE),
     re.compile(r"atlassian\s*intelligence", re.IGNORECASE),

@@ -1,4 +1,4 @@
-"""Dashboard routes — analytics and access control."""
+"""Dashboard routes — analytics, access control, and API endpoints."""
 
 from __future__ import annotations
 
@@ -7,8 +7,8 @@ import logging
 from pathlib import Path
 from typing import Optional
 
-from fastapi import APIRouter, Cookie, Form, Request
-from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
+from fastapi import APIRouter, Form, Request
+from fastapi.responses import JSONResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 
 from src.api.deps import draft_store
@@ -17,7 +17,7 @@ from src.config import settings
 router = APIRouter()
 logger = logging.getLogger(__name__)
 
-_ui_dir = Path(__file__).parent.parent  # src/api/
+_ui_dir = Path(__file__).parent.parent
 _templates = Jinja2Templates(directory=str(_ui_dir / "templates"))
 
 
@@ -100,20 +100,75 @@ async def dashboard_logout():
 
 @router.get("/dashboard")
 async def dashboard_page(request: Request):
-    """Render the analytics dashboard page."""
+    """Render the analytics dashboard with all data pre-computed server-side."""
     redirect = _require_auth(request)
     if redirect:
         return redirect
 
     metrics = draft_store.get_metrics()
+    daily_volume = draft_store.get_daily_volume(days=30)
+    severity_challenges = draft_store.get_severity_challenges(limit=50)
+    top_issues = draft_store.get_top_issues(limit=10)
+    repos_stats = draft_store.get_repos_stats()
+    response_times = draft_store.get_avg_response_time_by_day(days=30)
+
+    # Process severity items for the table
+    severity_items: list[dict] = []
+    override_count = 0
+    for draft in severity_challenges:
+        sc = draft.get("severity_challenge") or {}
+        rovo_changes = sc.get("rovo_changes", [])
+        latest = rovo_changes[-1] if rovo_changes else {}
+        disagrees = sc.get("disagrees", False)
+        if disagrees:
+            override_count += 1
+        severity_items.append({
+            "draft_id": draft.get("draft_id"),
+            "issue_key": draft.get("issue_key"),
+            "created_at": draft.get("created_at", ""),
+            "rovo_from": latest.get("from_value", "?"),
+            "rovo_to": latest.get("to_value", "?"),
+            "recommended": sc.get("recommended_severity", "?"),
+            "disagrees": disagrees,
+            "confidence": sc.get("confidence", 0),
+            "evidence_summary": _summarise_evidence(sc.get("evidence", {})),
+        })
+
+    # Derived values for the template
+    classifications = metrics.get("by_classification", {})
+    max_class_count = max(classifications.values()) if classifications else 1
+    time_saved_hours = round(metrics["approved"] * 15 / 60, 1)
+    total = metrics["total_drafts"]
+    hall_rate = round(metrics["hallucination_flagged"] / total * 100, 1) if total else 0.0
+    max_repo_count = max(repos_stats.values()) if repos_stats else 1
+
+    from src.config import settings as _s
+    configured_repos = [r.strip() for r in (_s.git.repos or "").split(",") if r.strip()]
+    if not configured_repos and _s.git.repo:
+        configured_repos = [_s.git.repo]
+
     return _templates.TemplateResponse(
         request,
         "dashboard.html",
-        {"metrics": metrics},
+        {
+            "metrics": metrics,
+            "daily_volume": daily_volume,
+            "severity_items": severity_items,
+            "override_count": override_count,
+            "top_issues": top_issues,
+            "repos_stats": repos_stats,
+            "response_times": response_times,
+            "classifications": classifications,
+            "max_class_count": max_class_count,
+            "time_saved_hours": time_saved_hours,
+            "hall_rate": hall_rate,
+            "configured_repos": configured_repos,
+            "max_repo_count": max_repo_count,
+        },
     )
 
 
-# JSON API endpoints (polled by Chart.js)
+# JSON API endpoints
 
 @router.get("/dashboard/api/summary")
 async def api_summary(request: Request):

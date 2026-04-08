@@ -1,4 +1,4 @@
-"""Comment classifier — determines comment intent."""
+"""Comment classifier — determines comment intent via LLM or keyword fallback."""
 
 from __future__ import annotations
 import json
@@ -10,7 +10,7 @@ from src.models.classification import CommentClassification, CommentType
 
 logger = logging.getLogger(__name__)
 
-# Keyword rules are a fallback when LLM classification is unavailable or low-confidence.
+# Keyword fallback rules
 
 _KEYWORD_RULES: list[tuple[list[str], CommentType, str, list[str]]] = [
     # (keywords, type, reasoning, missing_context)
@@ -33,9 +33,16 @@ _KEYWORD_RULES: list[tuple[list[str], CommentType, str, list[str]]] = [
         ["fix ready", "fix deployed", "fix released", "fix available",
          "please validate", "please verify", "ready for testing",
          "fixed in", "fix merged", "already fixed", "fixed in build",
-         "resolved in"],
+         "resolved in", "is now showing", "is now working", "now works",
+         "working now", "this fixed", "this resolved", "this fixes",
+         "that fixed", "that resolved", "problem was", "root cause was",
+         "root cause is", "issue was caused", "figured out", "turns out",
+         "workaround is", "workaround was", "solved by", "resolved by",
+         "fixed by", "resolved the issue", "fixed the issue",
+         "fixed the problem", "issue is resolved", "problem is resolved",
+         "no longer", "is working again"],
         CommentType.FIXED_VALIDATE,
-        "Developer indicates a fix is ready for validation",
+        "Developer indicates a fix or workaround has been applied",
         [],
     ),
     (
@@ -69,7 +76,7 @@ _KEYWORD_RULES: list[tuple[list[str], CommentType, str, list[str]]] = [
     ),
 ]
 
-# Copilot SDK classification prompt
+# LLM prompt
 
 _COPILOT_SYSTEM_PROMPT = """\
 You are a Jira comment classifier for a QA team. Given a developer comment on a
@@ -125,7 +132,7 @@ class CommentClassifier:
         # 2. Keyword fallback
         return self._classify_with_keywords(comment)
 
-    # Copilot LLM path
+    # LLM path
     def _classify_with_copilot(self, comment: Comment) -> Optional[CommentClassification]:
         """Call Copilot LLM and parse structured JSON output."""
         try:

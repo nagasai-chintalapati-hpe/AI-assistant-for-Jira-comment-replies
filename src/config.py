@@ -1,4 +1,4 @@
-"""Centralised configuration — reads from env vars / .env file."""
+"""Centralised configuration — reads from environment variables / .env file."""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
-# Load .env from project root (if present)
+# Load .env from project root if present
 _ENV_FILE = Path(__file__).resolve().parents[1] / ".env"
 load_dotenv(_ENV_FILE)
 
@@ -22,7 +22,7 @@ class JiraConfig:
     base_url: str = os.getenv("JIRA_BASE_URL", "")
     username: str = os.getenv("JIRA_USERNAME", "")
     api_token: str = os.getenv("JIRA_API_TOKEN", "")
-    draft_field_id: str = os.getenv("JIRA_DRAFT_FIELD_ID", "")  # e.g. customfield_10200
+    draft_field_id: str = os.getenv("JIRA_DRAFT_FIELD_ID", "")
 
     def __post_init__(self):
         if os.getenv("ENV") == "production":
@@ -53,13 +53,14 @@ class CopilotConfig:
 class LLMConfig:
     """Local LLM configuration (llama.cpp / GGUF)."""
 
-    backend: str = os.getenv("LLM_BACKEND", "copilot")  # "local" or "copilot"
-    model_path: str = os.getenv("LLM_MODEL_PATH", "")  # path to .gguf file
-    n_ctx: int = int(os.getenv("LLM_N_CTX", "4096"))  # context window
-    n_gpu_layers: int = int(os.getenv("LLM_N_GPU_LAYERS", "0"))  # 0 = CPU only
+    backend: str = os.getenv("LLM_BACKEND", "copilot")
+    model_path: str = os.getenv("LLM_MODEL_PATH", "")
+    n_ctx: int = int(os.getenv("LLM_N_CTX", "4096"))
+    n_gpu_layers: int = int(os.getenv("LLM_N_GPU_LAYERS", "0"))
     temperature: float = float(os.getenv("LLM_TEMPERATURE", "0.1"))
     max_tokens: int = int(os.getenv("LLM_MAX_TOKENS", "1024"))
     n_threads: int = int(os.getenv("LLM_N_THREADS", "4"))
+    max_retries: int = int(os.getenv("LLM_MAX_RETRIES", "3"))
 
 
 @dataclass(frozen=True)
@@ -81,8 +82,8 @@ class ConfluenceConfig:
     base_url: str = os.getenv("CONFLUENCE_BASE_URL", "")
     username: str = os.getenv("CONFLUENCE_USERNAME", "")
     api_token: str = os.getenv("CONFLUENCE_API_TOKEN", "")
-    spaces: str = os.getenv("CONFLUENCE_SPACES", "")  # comma-separated space keys
-    labels: str = os.getenv("CONFLUENCE_LABELS", "")  # comma-separated labels
+    spaces: str = os.getenv("CONFLUENCE_SPACES", "")
+    labels: str = os.getenv("CONFLUENCE_LABELS", "")
 
 
 @dataclass(frozen=True)
@@ -101,23 +102,23 @@ class TestRailConfig:
 class GitConfig:
     """Git provider settings (GitHub / GitLab / Bitbucket)."""
 
-    provider: str = os.getenv("GIT_PROVIDER", "github")  # github | gitlab | bitbucket
-    base_url: str = os.getenv("GIT_BASE_URL", "https://api.github.com")  # override for self-hosted
+    provider: str = os.getenv("GIT_PROVIDER", "github")
+    base_url: str = os.getenv("GIT_BASE_URL", "https://api.github.com")
     token: str = os.getenv("GIT_TOKEN", "")
-    owner: str = os.getenv("GIT_OWNER", "")  # org/user
-    repo: str = os.getenv("GIT_REPO", "")   # default repo (optional)
-    repos: str = os.getenv("GIT_REPOS", "")  # comma-separated: morpheus-core,morpheus-ui,...
+    owner: str = os.getenv("GIT_OWNER", "")
+    repo: str = os.getenv("GIT_REPO", "")
+    repos: str = os.getenv("GIT_REPOS", "")
 
 
 @dataclass(frozen=True)
 class ELKConfig:
     """Elasticsearch / OpenSearch settings."""
 
-    host: str = os.getenv("ELK_HOST", "")          # e.g. https://elk.internal:9200
+    host: str = os.getenv("ELK_HOST", "")
     username: str = os.getenv("ELK_USERNAME", "")
     password: str = os.getenv("ELK_PASSWORD", "")
-    api_key: str = os.getenv("ELK_API_KEY", "")    # alternative to user/pass
-    index_pattern: str = os.getenv("ELK_INDEX_PATTERN", "logs-*")  # index alias / pattern
+    api_key: str = os.getenv("ELK_API_KEY", "")
+    index_pattern: str = os.getenv("ELK_INDEX_PATTERN", "logs-*")
     default_time_window_hours: int = int(os.getenv("ELK_TIME_WINDOW_HOURS", "24"))
     max_hits: int = int(os.getenv("ELK_MAX_HITS", "50"))
 
@@ -129,21 +130,21 @@ class LogLookupConfig:
     jenkins_base_url: str = os.getenv("JENKINS_BASE_URL", "")
     jenkins_username: str = os.getenv("JENKINS_USERNAME", "")
     jenkins_api_token: str = os.getenv("JENKINS_API_TOKEN", "")
-    log_dir: str = os.getenv("LOG_DIR", "")  # local log directory
+    log_dir: str = os.getenv("LOG_DIR", "")
     default_time_window_hours: int = int(os.getenv("LOG_TIME_WINDOW_HOURS", "24"))
 
 
 @dataclass(frozen=True)
 class NotificationConfig:
-    # Teams
+    """Notification channel settings (Teams webhook and SMTP email)."""
+
     teams_webhook_url: str = os.getenv("TEAMS_WEBHOOK_URL", "")
-    # Email / SMTP
     smtp_host: str = os.getenv("SMTP_HOST", "")
     smtp_port: int = int(os.getenv("SMTP_PORT", "587"))
     smtp_username: str = os.getenv("SMTP_USERNAME", "")
     smtp_password: str = os.getenv("SMTP_PASSWORD", "")
     email_from: str = os.getenv("EMAIL_FROM", "")
-    email_to: str = os.getenv("EMAIL_TO", "")  # comma-separated
+    email_to: str = os.getenv("EMAIL_TO", "")
 
     def __post_init__(self):
         if self.smtp_host:
@@ -157,7 +158,7 @@ class NotificationConfig:
 
 @dataclass(frozen=True)
 class WebhookConfig:
-    """Webhook HMAC-SHA256 settings."""
+    """Webhook HMAC-SHA256 verification settings."""
 
     secret: str = os.getenv("JIRA_WEBHOOK_SECRET", "")
     # Set VALIDATE_WEBHOOK_SIGNATURE=true in production once the Jira webhook
@@ -180,7 +181,7 @@ class S3Config:
     """S3 / MinIO artifact storage settings."""
 
     bucket: str = os.getenv("S3_BUCKET", "")
-    endpoint_url: str = os.getenv("S3_ENDPOINT_URL", "")  # empty = AWS default
+    endpoint_url: str = os.getenv("S3_ENDPOINT_URL", "")
     access_key: str = os.getenv("S3_ACCESS_KEY", "")
     secret_key: str = os.getenv("S3_SECRET_KEY", "")
     region: str = os.getenv("S3_REGION", "us-east-1")
@@ -196,7 +197,6 @@ class RedisConfig:
     port: int = int(os.getenv("REDIS_PORT", "6379"))
     password: str = os.getenv("REDIS_PASSWORD", "")
     db: int = int(os.getenv("REDIS_DB", "0"))
-    # Full URL overrides host/port/password when set
     url: str = os.getenv("REDIS_URL", "")
 
 
@@ -214,9 +214,9 @@ class QueueConfig:
 class DashboardConfig:
     """Dashboard access control settings."""
 
-    token: str = os.getenv("DASHBOARD_TOKEN", "")  # empty = no auth required
+    token: str = os.getenv("DASHBOARD_TOKEN", "")
     cookie_name: str = "dash_token"
-    cookie_max_age: int = int(os.getenv("DASHBOARD_COOKIE_MAX_AGE", "86400"))  # 24 h
+    cookie_max_age: int = int(os.getenv("DASHBOARD_COOKIE_MAX_AGE", "86400"))
 
 
 @dataclass(frozen=True)
@@ -226,7 +226,6 @@ class AppConfig:
     log_level: str = os.getenv("LOG_LEVEL", "INFO")
     max_comments: int = int(os.getenv("MAX_COMMENTS", "10"))
     db_path: str = os.getenv("ASSISTANT_DB_PATH", ".data/assistant.db")
-    # Public base URL of this service — used for Review UI links in Teams cards
     base_url: str = os.getenv("APP_BASE_URL", "http://localhost:8000")
 
     def __post_init__(self):

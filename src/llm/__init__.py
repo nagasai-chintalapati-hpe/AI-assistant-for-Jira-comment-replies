@@ -1,1 +1,1 @@
-"""Copilot LLM abstraction layer."""
+"""LLM abstraction layer — Copilot API and local llama.cpp."""

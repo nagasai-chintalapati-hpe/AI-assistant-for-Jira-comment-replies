@@ -1,4 +1,4 @@
-"""SQLite-backed draft store with audit traceability."""
+"""SQLite-backed persistent draft store with audit traceability."""
 
 from __future__ import annotations
 
@@ -52,8 +52,6 @@ class SQLiteDraftStore:
         self._create_tables()
         logger.info("SQLite draft store ready (%s)", db_path)
 
-    # Schema bootstrap
-
     def _create_tables(self) -> None:
         """Create tables and indexes if they don't exist."""
         self._conn.executescript(_SCHEMA)
@@ -72,8 +70,6 @@ class SQLiteDraftStore:
                 self._conn.commit()
             except sqlite3.OperationalError:
                 pass  # column already exists — safe to ignore
-
-    # CRUD operations
 
     def save(self, draft: Draft, classification: Optional[str] = None) -> None:
         """Insert or replace a draft."""
@@ -412,8 +408,6 @@ class SQLiteDraftStore:
             "by_classification": by_classification,
         }
 
-    # Dashboard-specific queries
-
     def get_daily_volume(self, days: int = 30) -> list[dict]:
         """Return daily draft counts for the last *days* days.
 
@@ -531,8 +525,6 @@ class SQLiteDraftStore:
             for r in rows
         ]
 
-
-# Idempotency store
 
 _IDEMPOTENCY_SCHEMA = """\
 CREATE TABLE IF NOT EXISTS seen_events (

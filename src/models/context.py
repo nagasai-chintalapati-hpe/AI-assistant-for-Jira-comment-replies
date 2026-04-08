@@ -74,6 +74,7 @@ class ContextCollectionResult(BaseModel):
     build_metadata: Optional[dict[str, str]] = None  # commit, version, deploy_ts
 
     git_prs: Optional[list[GitPRMetadata]] = None          
+    repos_searched: Optional[list[str]] = None              # repos scanned for PR correlation
     elk_log_entries: Optional[list[LogEntry]] = None  
     s3_artifacts: Optional[list[dict[str, Any]]] = None  # S3 artifact metadata
 

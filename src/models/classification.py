@@ -1,4 +1,4 @@
-"""Comment classification models"""
+"""Comment classification models."""
 
 from enum import Enum
 from typing import Optional

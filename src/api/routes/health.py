@@ -1,4 +1,4 @@
-"""Health check and metrics routes."""
+"""Health check, metrics, and deep connectivity routes."""
 
 from __future__ import annotations
 
@@ -19,6 +19,7 @@ from src.api.deps import (
     _broker,
     _jira_client,
     _s3_fetcher,
+    _confluence_client,
     _get_rag_engine,
 )
 from src.config import settings
@@ -42,8 +43,9 @@ async def health_check():
         "integrations": {
             "jira": _jira_client is not None,
             "git": _git_client is not None,
+            "confluence": _confluence_client is not None,
             "testrail": _testrail_client.enabled,
-            "rag": _deps._rag_engine is not None,
+            "rag": _get_rag_engine() is not None,
             "elk": _log_lookup.elk_enabled,
             "queue": _broker.enabled,
         },

@@ -172,7 +172,7 @@ class TestDrafterRAGIntegration:
     def test_evidence_used_relevance_threshold(self, context_with_rag):
         """Both snippets >= 0.5 so both should show relevance."""
         evidence = ResponseDrafter._build_evidence_used(context_with_rag)
-        relevance_items = [e for e in evidence if "relevance:" in e]
+        relevance_items = [e for e in evidence if "match)" in e or "relevance:" in e]
         assert len(relevance_items) == 2
 
     def test_evidence_used_empty_without_rag(self, context_without_rag):

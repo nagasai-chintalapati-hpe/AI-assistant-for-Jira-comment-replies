@@ -10,6 +10,7 @@ from src.models.context import (
     IssueContext,
     ContextCollectionResult,
 )
+from src.config import settings
 from src.integrations.jira import JiraClient
 import logging
 
@@ -92,7 +93,7 @@ class ContextCollector:
             # 10. TestRail results (if run IDs detected in comments/description)
             testrail_results = self._fetch_testrail_results(issue_data)
             # 11. Git PR metadata (PR refs detected in issue text + comments)
-            git_prs = self._fetch_git_prs(issue_data)
+            git_prs, repos_searched = self._fetch_git_prs(issue_data)
             # 12. ELK log entries (search by summary keywords + build/env)
             elk_log_entries = self._fetch_elk_logs(
                 issue_data=issue_data,
@@ -154,6 +155,7 @@ class ContextCollector:
                 testrail_results=testrail_results or None,
                 build_metadata=build_metadata,
                 git_prs=git_prs or None,
+                repos_searched=repos_searched or None,
                 elk_log_entries=elk_log_entries or None,
                 s3_artifacts=s3_artifacts or None,
                 testrail_marker_results=testrail_marker_results or None,
@@ -177,12 +179,17 @@ class ContextCollector:
     # Private helpers
     def _fetch_git_prs(
         self, issue_data: dict[str, Any]
-    ) -> list:
-        """Detect PR references and fetch metadata across configured repos."""
+    ) -> tuple[list, list[str]]:
+        """Detect PR references and fetch metadata across configured repos.
+
+        Returns ``(prs, repos_searched)`` so both can be stored on the
+        :class:`ContextCollectionResult`.
+        """
         if not self._git_client:
-            return []
+            return [], []
 
         fields = issue_data.get("fields", {})
+        issue_key = issue_data.get("key", "") or fields.get("project", {}).get("key", "")
         desc = fields.get("description", "") or ""
         comment_bodies: list[str] = [
             c.get("body", "")
@@ -191,18 +198,17 @@ class ContextCollector:
         ]
 
         try:
-            # Use multi-repo fan-out (falls back to single-repo internally)
+            # Use multi-repo fan-out with issue-key fallback
             prs, repos_searched = self._git_client.fetch_prs_across_repos(
                 issue_text=desc,
                 comment_texts=comment_bodies,
                 max_prs_per_repo=3,
+                issue_key=issue_key or None,
             )
-            # Stash searched repos for later use by the draft
-            self._last_repos_searched = repos_searched
-            return prs
+            return prs, repos_searched
         except Exception as exc:
             logger.warning("Git PR fetch failed: %s", exc)
-            return []
+            return [], []
 
     def _fetch_elk_logs(
         self,
@@ -216,7 +222,7 @@ class ContextCollector:
         summary = fields.get("summary", "") or ""
         if not summary:
             return []
-        # Try to extract useful keywords from summary (first 200 chars)
+        # Extract keywords
         query = summary[:200]
         build_id: Optional[str] = None
         env: Optional[str] = None
@@ -224,7 +230,7 @@ class ContextCollector:
             build_id = build_metadata.get("version") or build_metadata.get("commit")
             env = None  # environment comes from IssueContext, not build metadata
 
-        # Use environment from issue fields if available
+        # Environment info
         issue_env = fields.get("environment") or ""
         if issue_env and isinstance(issue_env, str):
             env = issue_env[:100]
@@ -288,33 +294,43 @@ class ContextCollector:
         issue_key: str,
         issue_data: dict[str, Any],
     ) -> Optional[list[dict[str, Any]]]:
-        """Fetch TestRail results filtered by marker (issue key in refs)."""
+        """Fetch TestRail results filtered by marker (issue key in refs),
+        falling back to relevance-scored recent runs."""
         if not self._testrail or not getattr(self._testrail, "enabled", False):
             return None
 
         try:
-            runs = self._testrail.get_runs(limit=5)
+            runs = self._testrail.get_runs(limit=10)
             results: list[dict[str, Any]] = []
-            for run in runs[:3]:
+
+            # First pass: try marker-scoped (issue key in test refs)
+            for run in runs[:5]:
                 run_id = run.get("id")
                 if not run_id:
                     continue
-                # Try marker-scoped summary first
                 summary = self._testrail.get_run_summary_by_marker(
                     run_id, issue_key
                 )
                 if summary and summary.get("total", 0) > 0:
                     results.append(summary)
 
-            # Fallback: if no marker matches, include overall run summaries
+            # Fallback: rank all runs by keyword relevance to the defect
             if not results:
-                for run in runs[:2]:
+                keywords = self._extract_defect_keywords(issue_data)
+                scored_runs = [
+                    (run, self._score_run_relevance(run, keywords))
+                    for run in runs
+                ]
+                scored_runs.sort(key=lambda x: x[1], reverse=True)
+
+                for run, score in scored_runs[:3]:
                     run_id = run.get("id")
-                    if not run_id:
+                    if not run_id or score <= 0:
                         continue
                     try:
                         full_summary = self._testrail.get_run_summary(run_id)
                         if full_summary and full_summary.get("total", 0) > 0:
+                            full_summary["_relevance_score"] = score
                             results.append(full_summary)
                     except Exception as exc:
                         logger.debug(
@@ -332,40 +348,147 @@ class ContextCollector:
         issue_key: str,
         issue_data: dict[str, Any],
     ) -> Optional[list[dict[str, str]]]:
-        """Search Confluence for pages related to the issue."""
+        """Search Confluence for pages most relevant to the defect.
+
+        Runs multiple targeted queries — issue key, product names,
+        individual significant keywords, and technology acronyms — then
+        deduplicates and ranks results so the most useful pages surface
+        first.
+        """
         if not self._confluence or not getattr(self._confluence, "enabled", False):
             return None
 
-        fields = issue_data.get("fields", {})
-        summary = fields.get("summary", "")
-        components = [
-            c.get("name", "") for c in fields.get("components", [])
+        fields = issue_data.get("fields", {}) or {}
+        summary = fields.get("summary", "") or ""
+        description = (fields.get("description", "") or "")[:2000]
+        combined_text = f"{summary} {description}"
+        components = [c.get("name", "") for c in fields.get("components", []) if c.get("name")]
+        labels = fields.get("labels", []) or []
+        versions = [
+            v.get("name", "") for v in
+            (fields.get("versions", []) or []) + (fields.get("fixVersions", []) or [])
+            if v.get("name")
         ]
 
-        citations: list[dict[str, str]] = []
-        queries = [issue_key]
-        if components:
-            queries.append(components[0])
-        elif summary:
-            # Use first 3 significant words from summary
-            words = [w for w in summary.split() if len(w) > 3][:3]
-            if words:
-                queries.append(" ".join(words))
+        # Reuse keywords
+        defect_keywords = self._extract_defect_keywords(issue_data)
 
-        for query in queries[:2]:
+        # ── Build a prioritised list of search queries ──────────────────
+        queries: list[tuple[str, int]] = []  # (query_text, priority_boost)
+
+        # 1. Exact issue key (highest signal)
+        queries.append((issue_key, 3))
+
+        # 2. Component + version combos (e.g. "Morpheus 8.1.0")
+        for comp in components[:2]:
+            if versions:
+                queries.append((f"{comp} {versions[0]}", 2))
+            queries.append((comp, 1))
+
+        # 3. Product names from description (e.g. "Morpheus", "HVM")
+        product_matches = re.findall(
+            r"(\b[A-Z][a-zA-Z]+)\s+(?:version|ver|v)[:\s]*(\d+\.\d+[\.\d]*)",
+            combined_text, re.IGNORECASE,
+        )
+        for prod_name, prod_ver in product_matches:
+            queries.append((f"{prod_name} {prod_ver}", 2))
+            queries.append((prod_name, 1))
+
+        # 4. Technology acronyms (HVM, VTEP, SDN, etc.)
+        for acr in re.findall(r"\b([A-Z]{3,})\b", combined_text):
+            if acr not in {"AND", "THE", "FOR", "NOT", "BUT", "HAS", "ARE",
+                           "WAS", "URL", "HTTP", "HTTPS", "API", "SSH"}:
+                queries.append((acr, 2))
+
+        # 5. INDIVIDUAL significant words from summary (much better recall
+        #    than 4-word phrases that rarely match)
+        _STOP = {"the", "and", "for", "with", "from", "that", "this", "not",
+                 "are", "was", "but", "has", "have", "had", "been", "will",
+                 "does", "did", "can", "should", "would", "could", "issue",
+                 "bug", "defect", "error", "when", "after", "before",
+                 "into", "even", "one", "all", "some", "observed",
+                 "getting", "showing", "successful"}
+        sig_words = [w for w in re.split(r"[\s/\-_()\[\],.;:]+", summary)
+                     if len(w) > 2 and w.lower() not in _STOP]
+
+        # Per-word queries
+        for w in sig_words[:6]:
+            queries.append((w, 1))
+
+        # 2-word combos from adjacent summary words (better precision)
+        for i in range(len(sig_words) - 1):
+            queries.append((f"{sig_words[i]} {sig_words[i+1]}", 1))
+            if len(queries) > 15:
+                break
+
+        # 6. Error signatures in description/summary
+        error_patterns = re.findall(
+            r"(?:[A-Z][a-z]+(?:Exception|Error|Failure))"
+            r"|(?:[a-z_]+\.[A-Z][a-zA-Z]+(?:Exception|Error))"
+            r"|(?:status\s*(?:code)?\s*\d{3})",
+            combined_text,
+            re.IGNORECASE,
+        )
+        for ep in dict.fromkeys(error_patterns):
+            queries.append((ep, 2))
+
+        # 7. Labels that look like product/feature names
+        for lbl in labels[:3]:
+            if len(lbl) > 2 and lbl.lower() not in _STOP:
+                queries.append((lbl, 1))
+
+        # Deduplicate queries (case-insensitive)
+        seen_queries: set[str] = set()
+        unique_queries: list[tuple[str, int]] = []
+        for q, boost in queries:
+            ql = q.lower().strip()
+            if ql and ql not in seen_queries:
+                seen_queries.add(ql)
+                unique_queries.append((q, boost))
+
+        # ── Execute searches and collect scored results ─────────────────
+        scored: dict[str, tuple[dict[str, str], int]] = {}
+
+        for query_text, boost in unique_queries[:10]:  # cap to avoid rate-limiting
             try:
-                results = self._confluence.search_by_text(query, limit=3)
+                results = self._confluence.search_by_text(query_text, limit=3)
                 for cite in results:
                     cite_dict = cite.to_citation_dict()
-                    # Deduplicate by page_id
-                    if not any(
-                        c.get("url") == cite_dict.get("url")
-                        for c in citations
-                    ):
-                        citations.append(cite_dict)
+                    url = cite_dict.get("url", "")
+                    # Score relevance
+                    score = boost
+                    title_lower = cite_dict.get("source", "").lower()
+                    excerpt_lower = cite_dict.get("excerpt", "").lower()
+                    page_text = f"{title_lower} {excerpt_lower}"
+                    # Keyword boost
+                    for kw in defect_keywords[:10]:
+                        if kw.lower() in page_text:
+                            score += 1
+                    for comp in components:
+                        if comp.lower() in page_text:
+                            score += 2
+                    for ver in versions[:2]:
+                        if ver in page_text:
+                            score += 1
+                    if issue_key.lower() in page_text:
+                        score += 3
+                    # Dedup
+                    if url not in scored or scored[url][1] < score:
+                        scored[url] = (cite_dict, score)
             except Exception as exc:
-                logger.debug("Confluence search for %r failed: %s", query, exc)
+                logger.debug("Confluence search for %r failed: %s", query_text, exc)
 
+        if not scored:
+            return None
+
+        # Sort and return
+        ranked = sorted(scored.values(), key=lambda x: x[1], reverse=True)
+        citations = [cite_dict for cite_dict, _score in ranked[:5]]
+
+        logger.info(
+            "Confluence: %d relevant pages found (from %d queries)",
+            len(citations), min(len(unique_queries), 10),
+        )
         return citations or None
 
     def _fetch_jenkins_test_report(
@@ -445,6 +568,83 @@ class ContextCollector:
             logger.warning("Pipeline correlation failed: %s", exc)
             return None
 
+    @staticmethod
+    def _extract_defect_keywords(issue_data: dict[str, Any]) -> list[str]:
+        """Extract product/version/technology keywords from a defect for
+        relevance matching against TestRail run names or other sources."""
+        fields = issue_data.get("fields", {}) or {}
+        summary = fields.get("summary", "") or ""
+        description = (fields.get("description", "") or "")[:2000]
+        combined = f"{summary} {description}"
+
+        keywords: list[str] = []
+
+        # Components and versions (highest signal)
+        for c in fields.get("components", []):
+            if c.get("name"):
+                keywords.append(c["name"])
+        for v in fields.get("versions", []) + fields.get("fixVersions", []):
+            if v.get("name"):
+                keywords.append(v["name"])
+
+        # Product names
+        for m in re.findall(
+            r"(\b[A-Z][a-zA-Z]+)\s+(?:version|ver|v)[:\s]*(\d+\.\d+[\.\d]*)",
+            combined, re.IGNORECASE,
+        ):
+            keywords.extend(m)  # product name + version number
+
+        # Technology acronyms (3+ uppercase letters, e.g. HVM, VTEP, SDN)
+        for acr in re.findall(r"\b([A-Z]{3,})\b", combined):
+            if acr not in {"AND", "THE", "FOR", "NOT", "BUT", "HAS", "ARE",
+                           "WAS", "URL", "HTTP", "HTTPS", "API"}:
+                keywords.append(acr)
+
+        # Version patterns (e.g. 8.1.0, Build 1157)
+        for ver in re.findall(r"\b(\d+\.\d+(?:\.\d+)?)\b", combined):
+            keywords.append(ver)
+        for build in re.findall(r"Build\s*(\d+)", combined, re.IGNORECASE):
+            keywords.append(f"Build {build}")
+            keywords.append(build)
+
+        # Summary words
+        _STOP = {"the", "and", "for", "with", "from", "that", "this", "not",
+                 "are", "was", "but", "has", "into", "after", "before", "when",
+                 "while", "even", "one", "all", "some", "data", "getting",
+                 "showing", "observed", "successful"}
+        for w in re.split(r"[\s/\-_()\[\],.;:]+", summary):
+            if len(w) > 2 and w.lower() not in _STOP:
+                keywords.append(w)
+
+        # Deduplicate preserving order
+        seen: set[str] = set()
+        unique: list[str] = []
+        for k in keywords:
+            kl = k.lower().strip()
+            if kl and kl not in seen:
+                seen.add(kl)
+                unique.append(k.strip())
+        return unique
+
+    @staticmethod
+    def _score_run_relevance(
+        run: dict[str, Any], keywords: list[str]
+    ) -> int:
+        """Score a TestRail run's relevance to a defect based on keyword overlap."""
+        run_name = (run.get("name", "") or "").lower()
+        run_desc = (run.get("description", "") or "").lower()
+        run_text = f"{run_name} {run_desc}"
+        score = 0
+        for kw in keywords:
+            kw_lower = kw.lower()
+            if kw_lower in run_text:
+                # Stronger signals
+                if re.match(r"\d+\.\d+", kw) or kw.isupper():
+                    score += 3
+                else:
+                    score += 1
+        return score
+
     def _fetch_testrail_results(
         self, issue_data: dict[str, Any]
     ) -> Optional[list[dict[str, Any]]]:
@@ -472,7 +672,7 @@ class ContextCollector:
         results: list[dict[str, Any]] = []
 
         if run_ids:
-            # Fetch summaries for explicitly referenced runs
+            # Explicit run IDs
             for rid in list(run_ids)[:3]:
                 try:
                     summary = self._testrail.get_run_summary(rid)
@@ -480,17 +680,44 @@ class ContextCollector:
                 except Exception as exc:
                     logger.warning("TestRail run %d fetch failed: %s", rid, exc)
         else:
-            # Fallback: fetch the most recent run(s) for the configured project
+            # Fallback: fetch recent runs and rank by relevance to the defect
             try:
-                recent_runs = self._testrail.get_runs(limit=3)
-                for run in recent_runs[:2]:
+                recent_runs = self._testrail.get_runs(limit=10)
+                keywords = self._extract_defect_keywords(issue_data)
+                scored_runs = [
+                    (run, self._score_run_relevance(run, keywords))
+                    for run in recent_runs
+                ]
+                # Sort by relevance
+                scored_runs.sort(key=lambda x: x[1], reverse=True)
+
+                for run, score in scored_runs[:3]:
                     rid = run.get("id")
+                    if not rid:
+                        continue
+                    # Relevant only
+                    if score > 0:
+                        try:
+                            summary = self._testrail.get_run_summary(rid)
+                            summary["_relevance_score"] = score
+                            results.append(summary)
+                        except Exception as exc:
+                            logger.warning("TestRail run %d fetch failed: %s", rid, exc)
+
+                # Fallback: most recent
+                if not results and recent_runs:
+                    rid = recent_runs[0].get("id")
                     if rid:
                         try:
                             summary = self._testrail.get_run_summary(rid)
                             results.append(summary)
                         except Exception as exc:
                             logger.warning("TestRail run %d fetch failed: %s", rid, exc)
+
+                logger.info(
+                    "TestRail: %d relevant runs from %d total (keywords: %s)",
+                    len(results), len(recent_runs), keywords[:5],
+                )
             except Exception as exc:
                 logger.warning("TestRail recent-runs fallback failed: %s", exc)
 
@@ -520,11 +747,12 @@ class ContextCollector:
 
         kb_query = f"{summary}. {description[:500]}" if description else summary
         snippets: list = []
+        min_relevance = 0.40
 
         # 1. Knowledge-base query (Confluence, PDFs, runbooks)
         try:
             result = self._rag_engine.query(text=kb_query)
-            snippets.extend(result.snippets)
+            snippets.extend(s for s in result.snippets if s.relevance_score >= min_relevance)
         except Exception as exc:
             logger.warning("RAG KB query failed for %s: %s", issue_key, exc)
         # 2. Prior similar defects query
@@ -533,16 +761,16 @@ class ContextCollector:
                 text=summary,
                 where={"source": "jira"},
             )
-            # Avoid duplicates by chunk id
             existing_ids = {getattr(s, "chunk_id", None) for s in snippets}
             for s in prior_result.snippets:
-                if getattr(s, "chunk_id", None) not in existing_ids:
+                if s.relevance_score >= min_relevance and getattr(s, "chunk_id", None) not in existing_ids:
                     snippets.append(s)
         except Exception as exc:
-            # prior-defect index may not exist yet — non-fatal
             logger.debug("RAG prior-defect query failed for %s: %s", issue_key, exc)
 
-        return snippets
+        # Sort and trim
+        snippets.sort(key=lambda s: s.relevance_score, reverse=True)
+        return snippets[:settings.rag.top_k]
 
     @staticmethod
     def _extract_versions(fields: dict) -> list[str]:

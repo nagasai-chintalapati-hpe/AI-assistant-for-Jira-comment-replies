@@ -1,4 +1,4 @@
-"""Jira webhook listener."""
+"""Jira webhook listener — receives and processes incoming events."""
 
 from __future__ import annotations
 
@@ -62,8 +62,7 @@ async def jira_webhook(request: Request):
     except Exception:
         raise HTTPException(status_code=400, detail="Invalid JSON payload")
 
-    # Jira Cloud may send comment body as ADF (dict) instead of plain text —
-    # normalise it so the Pydantic model always gets a string.
+    # Normalise ADF (Atlassian Document Format) body to plain text
     _raw_comment = payload.get("comment")
     if isinstance(_raw_comment, dict):
         raw_body = _raw_comment.get("body")
@@ -87,7 +86,7 @@ async def jira_webhook(request: Request):
         event.comment.id if event.comment else None,
     )
 
-    # 4. EventFilter
+    # Event filter
     result = event_filter.evaluate(event)
     if not result.accepted:
         logger.info("Event filtered out: %s", result.reason)
@@ -97,7 +96,7 @@ async def jira_webhook(request: Request):
             "event_id": result.event_id,
         }
 
-    # 5. Orchestrate — via message queue (async) or synchronous fallback
+    # Orchestrate via message queue or synchronous fallback
     if _broker.enabled:
         published = _broker.publish(payload)
         if published:

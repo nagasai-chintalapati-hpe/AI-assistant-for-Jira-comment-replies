@@ -1,4 +1,4 @@
-"""Comment data model"""
+"""Comment data model."""
 
 from datetime import datetime
 from typing import Optional

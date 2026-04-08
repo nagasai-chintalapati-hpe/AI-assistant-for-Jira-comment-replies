@@ -14,9 +14,6 @@ from src.config import settings
 logger = logging.getLogger(__name__)
 
 
-# HMAC webhook signature verification 
-
-
 def _verify_signature(body: bytes, signature_header: Optional[str]) -> bool:
     """Verify the Jira webhook HMAC-SHA256 signature."""
     if not settings.webhook.validate_signature or not settings.webhook.secret:
@@ -34,9 +31,6 @@ def _verify_signature(body: bytes, signature_header: Optional[str]) -> bool:
         settings.webhook.secret.encode("utf-8"), body, hashlib.sha256
     ).hexdigest()
     return hmac.compare_digest(expected, provided)
-
-
-# Per-IP rate limiter
 
 
 class _RateLimiter:

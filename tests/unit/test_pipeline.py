@@ -3,7 +3,8 @@
 import pytest
 from fastapi.testclient import TestClient
 
-from src.api.app import app, event_filter, draft_store, _idempotency_store
+from src.api.app import app
+from src.api.deps import draft_store, event_filter, _idempotency_store
 
 
 @pytest.fixture(autouse=True)
