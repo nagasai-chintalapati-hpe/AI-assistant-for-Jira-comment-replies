@@ -21,7 +21,7 @@ _ui_dir = Path(__file__).parent.parent
 _templates = Jinja2Templates(directory=str(_ui_dir / "templates"))
 
 
-# --- Authentication helpers ---
+# Auth helpers
 
 def _token_required() -> bool:
     """Return True when the dashboard is locked behind a token."""
@@ -47,7 +47,7 @@ def _require_auth(request: Request) -> Optional[RedirectResponse]:
     return RedirectResponse(url="/dashboard/login", status_code=307)
 
 
-# --- Login / Logout ---
+# Login / Logout
 
 @router.get("/dashboard/login")
 async def dashboard_login_page(request: Request, error: str = ""):
@@ -96,7 +96,7 @@ async def dashboard_logout():
     return response
 
 
-# --- Dashboard page ---
+# Dashboard page
 
 @router.get("/dashboard")
 async def dashboard_page(request: Request):
@@ -168,7 +168,7 @@ async def dashboard_page(request: Request):
     )
 
 
-# --- JSON API endpoints (used by polling clients) ---
+# JSON API endpoints
 
 @router.get("/dashboard/api/summary")
 async def api_summary(request: Request):

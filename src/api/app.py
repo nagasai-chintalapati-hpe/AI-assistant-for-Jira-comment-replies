@@ -54,7 +54,7 @@ async def lifespan(app_instance: FastAPI):
     logger.info("Jira Comment Assistant API stopped")
 
 
-# --- FastAPI application instance ---
+# App instance
 
 app = FastAPI(
     title="Jira Comment Assistant",

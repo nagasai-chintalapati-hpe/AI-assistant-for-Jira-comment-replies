@@ -204,7 +204,7 @@ class ResponseDrafter:
             repos_searched=repos_searched,
         )
 
-    # Template cleanup (fallback when LLM is unavailable)
+    # Template cleanup
 
     @staticmethod
     def _clean_template_output(text: str) -> str:
@@ -227,7 +227,7 @@ class ResponseDrafter:
         result = re.sub(r"\n{3,}", "\n\n", result)
         return result.strip()
 
-    # LLM refinement
+    # LLM refine
 
     def _refine_with_copilot(self, draft_text, comment, classification, context):
         """Polish the template-filled draft using Copilot LLM."""
@@ -263,7 +263,7 @@ class ResponseDrafter:
             temperature=0.15,
         )
 
-    # Hallucination detection
+    # Hallucination check
 
     @staticmethod
     def _detect_hallucination(body: str, citations: list[dict[str, str]]) -> bool:
@@ -280,7 +280,7 @@ class ResponseDrafter:
         logger.warning("Hallucination flag — claims without evidence citations")
         return True
 
-    # Template filling
+    # Fill template
 
     def _fill_template(self, comment, classification, context):
         """Select and fill the template for the classification type."""
@@ -329,7 +329,7 @@ class ResponseDrafter:
             logger.warning("Template substitution key missing: %s", exc)
             return template
 
-    # Evidence formatters
+    # Evidence format
 
     @staticmethod
     def _format_pr_evidence(context: ContextCollectionResult) -> str:
@@ -453,7 +453,7 @@ class ResponseDrafter:
         m = re.search(r"\b(production|staging|qa|uat|dev|preprod|pre-prod|sandbox)\b", combined, re.IGNORECASE)
         return m.group(1) if m else None
 
-    # Citations and evidence
+    # Citations
 
     @staticmethod
     def _strip_html_comments(text: str) -> str:
@@ -585,7 +585,7 @@ class ResponseDrafter:
             ev.append(f"S3 artifact: {art.get('key', 'unknown')}")
         return ev
 
-    # Suggested labels
+    # Labels
 
     @staticmethod
     def _suggest_actions(classification: CommentClassification) -> list[dict[str, str]]:

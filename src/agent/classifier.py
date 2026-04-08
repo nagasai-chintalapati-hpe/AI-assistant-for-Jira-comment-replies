@@ -10,7 +10,7 @@ from src.models.classification import CommentClassification, CommentType
 
 logger = logging.getLogger(__name__)
 
-# Keyword rules as fallback when LLM classification is unavailable or low-confidence.
+# Keyword fallback rules
 
 _KEYWORD_RULES: list[tuple[list[str], CommentType, str, list[str]]] = [
     # (keywords, type, reasoning, missing_context)
@@ -76,7 +76,7 @@ _KEYWORD_RULES: list[tuple[list[str], CommentType, str, list[str]]] = [
     ),
 ]
 
-# LLM classification system prompt
+# LLM prompt
 
 _COPILOT_SYSTEM_PROMPT = """\
 You are a Jira comment classifier for a QA team. Given a developer comment on a
@@ -132,7 +132,7 @@ class CommentClassifier:
         # 2. Keyword fallback
         return self._classify_with_keywords(comment)
 
-    # Copilot LLM path
+    # LLM path
     def _classify_with_copilot(self, comment: Comment) -> Optional[CommentClassification]:
         """Call Copilot LLM and parse structured JSON output."""
         try:

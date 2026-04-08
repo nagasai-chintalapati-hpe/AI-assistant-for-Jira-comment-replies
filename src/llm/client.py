@@ -16,10 +16,14 @@ _COPILOT_DEFAULT_BASE_URL = "https://api.githubcopilot.com"
 class CopilotLLMClient:
     """LLM client supporting Copilot API and local llama.cpp."""
 
+    _FALLBACK_MODELS = ["gpt-4o", "gpt-4o-mini", "gpt-4.1-mini", "gpt-4.1-nano"]
+
     def __init__(self) -> None:
         self._openai_client = None
         self._local_llm = None
         self._active_backend: str = "none"
+        self._current_model: str = settings.copilot.model
+        self._exhausted_models: set[str] = set()
 
         backend = settings.llm.backend.lower()
         if backend == "local":
@@ -27,9 +31,8 @@ class CopilotLLMClient:
         else:
             self._init_copilot()
 
-    # --- Backend initialisation ---
     def _init_copilot(self) -> None:
-        """Set up the GitHub Copilot API client (OpenAI-compatible SDK)."""
+        """Init Copilot client."""
         api_key = settings.copilot.api_key
         if not api_key:
             logger.info(
@@ -54,7 +57,7 @@ class CopilotLLMClient:
             logger.warning("Failed to initialise Copilot LLM client: %s", exc)
 
     def _init_local(self) -> None:
-        """Load a local GGUF model via llama.cpp."""
+        """Init local model."""
         model_path = settings.llm.model_path
         if not model_path:
             logger.warning(
@@ -107,7 +110,7 @@ class CopilotLLMClient:
         _max = max_tokens or settings.llm.max_tokens
         _temp = temperature if temperature is not None else settings.llm.temperature
 
-        # Local model takes priority when loaded (fully on-prem)
+        # Local model first
         if self._local_llm is not None:
             return self._complete_local(messages, _max, _temp)
         if self._openai_client is not None:
@@ -120,32 +123,56 @@ class CopilotLLMClient:
         max_tokens: int,
         temperature: float,
     ) -> Optional[str]:
-        max_retries = settings.llm.max_retries
-        for attempt in range(max_retries + 1):
+        """Copilot with fallback."""
+        # Model priority list
+        models_to_try = [self._current_model]
+        for m in self._FALLBACK_MODELS:
+            if m != self._current_model and m not in self._exhausted_models:
+                models_to_try.append(m)
+
+        for model in models_to_try:
             try:
                 resp = self._openai_client.chat.completions.create(  # type: ignore[union-attr]
-                    model=settings.copilot.model,
+                    model=model,
                     messages=messages,
                     max_tokens=max_tokens,
                     temperature=temperature,
                 )
-                return resp.choices[0].message.content.strip()
+                result = resp.choices[0].message.content.strip()
+                if model != self._current_model:
+                    logger.info("Model fallback: %s → %s (success)", self._current_model, model)
+                    self._current_model = model
+                return result
             except Exception as exc:
                 exc_str = str(exc)
                 is_rate_limit = "429" in exc_str or "RateLimit" in exc_str
-                if is_rate_limit and attempt < max_retries:
-                    wait = min(2 ** attempt * 2, 30)
-                    logger.info(
-                        "Rate limited (attempt %d/%d) — retrying in %ds",
-                        attempt + 1, max_retries, wait,
+                is_daily_limit = "exceeded" in exc_str.lower() and ("day" in exc_str.lower() or "86400" in exc_str)
+                if is_daily_limit:
+                    self._exhausted_models.add(model)
+                    logger.warning(
+                        "Model %s daily limit exhausted — trying next fallback",
+                        model,
                     )
-                    time.sleep(wait)
                     continue
-                logger.warning(
-                    "Copilot API completion failed (attempt %d/%d): %s",
-                    attempt + 1, max_retries + 1, exc,
-                )
+                if is_rate_limit:
+                    # Short rate limit — retry once
+                    time.sleep(2)
+                    try:
+                        resp = self._openai_client.chat.completions.create(  # type: ignore[union-attr]
+                            model=model,
+                            messages=messages,
+                            max_tokens=max_tokens,
+                            temperature=temperature,
+                        )
+                        return resp.choices[0].message.content.strip()
+                    except Exception:
+                        logger.warning("Model %s rate-limited — trying next fallback", model)
+                        continue
+                # Other error — fail
+                logger.warning("Copilot API completion failed (model=%s): %s", model, exc)
                 return None
+
+        logger.error("All LLM models exhausted — no fallback available")
         return None
 
     def _complete_local(

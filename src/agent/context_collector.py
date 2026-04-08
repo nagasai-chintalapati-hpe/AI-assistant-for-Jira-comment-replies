@@ -222,7 +222,7 @@ class ContextCollector:
         summary = fields.get("summary", "") or ""
         if not summary:
             return []
-        # Try to extract useful keywords from summary (first 200 chars)
+        # Extract keywords
         query = summary[:200]
         build_id: Optional[str] = None
         env: Optional[str] = None
@@ -230,7 +230,7 @@ class ContextCollector:
             build_id = build_metadata.get("version") or build_metadata.get("commit")
             env = None  # environment comes from IssueContext, not build metadata
 
-        # Use environment from issue fields if available
+        # Environment info
         issue_env = fields.get("environment") or ""
         if issue_env and isinstance(issue_env, str):
             env = issue_env[:100]
@@ -370,7 +370,7 @@ class ContextCollector:
             if v.get("name")
         ]
 
-        # Reuse the shared keyword extractor
+        # Reuse keywords
         defect_keywords = self._extract_defect_keywords(issue_data)
 
         # ── Build a prioritised list of search queries ──────────────────
@@ -411,7 +411,7 @@ class ContextCollector:
         sig_words = [w for w in re.split(r"[\s/\-_()\[\],.;:]+", summary)
                      if len(w) > 2 and w.lower() not in _STOP]
 
-        # Each significant word as its own query (great for Confluence CQL)
+        # Per-word queries
         for w in sig_words[:6]:
             queries.append((w, 1))
 
@@ -455,12 +455,12 @@ class ContextCollector:
                 for cite in results:
                     cite_dict = cite.to_citation_dict()
                     url = cite_dict.get("url", "")
-                    # Compute a relevance score
+                    # Score relevance
                     score = boost
                     title_lower = cite_dict.get("source", "").lower()
                     excerpt_lower = cite_dict.get("excerpt", "").lower()
                     page_text = f"{title_lower} {excerpt_lower}"
-                    # Boost pages matching defect keywords
+                    # Keyword boost
                     for kw in defect_keywords[:10]:
                         if kw.lower() in page_text:
                             score += 1
@@ -472,7 +472,7 @@ class ContextCollector:
                             score += 1
                     if issue_key.lower() in page_text:
                         score += 3
-                    # Keep highest score if already seen
+                    # Dedup
                     if url not in scored or scored[url][1] < score:
                         scored[url] = (cite_dict, score)
             except Exception as exc:
@@ -481,7 +481,7 @@ class ContextCollector:
         if not scored:
             return None
 
-        # Sort by score descending, return top 5
+        # Sort and return
         ranked = sorted(scored.values(), key=lambda x: x[1], reverse=True)
         citations = [cite_dict for cite_dict, _score in ranked[:5]]
 
@@ -587,7 +587,7 @@ class ContextCollector:
             if v.get("name"):
                 keywords.append(v["name"])
 
-        # Product names from description (e.g. "Morpheus version: 8.0.11")
+        # Product names
         for m in re.findall(
             r"(\b[A-Z][a-zA-Z]+)\s+(?:version|ver|v)[:\s]*(\d+\.\d+[\.\d]*)",
             combined, re.IGNORECASE,
@@ -607,7 +607,7 @@ class ContextCollector:
             keywords.append(f"Build {build}")
             keywords.append(build)
 
-        # Significant words from summary (nouns/proper nouns)
+        # Summary words
         _STOP = {"the", "and", "for", "with", "from", "that", "this", "not",
                  "are", "was", "but", "has", "into", "after", "before", "when",
                  "while", "even", "one", "all", "some", "data", "getting",
@@ -638,7 +638,7 @@ class ContextCollector:
         for kw in keywords:
             kw_lower = kw.lower()
             if kw_lower in run_text:
-                # Version numbers and acronyms are stronger signals
+                # Stronger signals
                 if re.match(r"\d+\.\d+", kw) or kw.isupper():
                     score += 3
                 else:
@@ -672,7 +672,7 @@ class ContextCollector:
         results: list[dict[str, Any]] = []
 
         if run_ids:
-            # Fetch summaries for explicitly referenced runs
+            # Explicit run IDs
             for rid in list(run_ids)[:3]:
                 try:
                     summary = self._testrail.get_run_summary(rid)
@@ -688,14 +688,14 @@ class ContextCollector:
                     (run, self._score_run_relevance(run, keywords))
                     for run in recent_runs
                 ]
-                # Sort by relevance score descending
+                # Sort by relevance
                 scored_runs.sort(key=lambda x: x[1], reverse=True)
 
                 for run, score in scored_runs[:3]:
                     rid = run.get("id")
                     if not rid:
                         continue
-                    # Only include runs with at least some keyword overlap
+                    # Relevant only
                     if score > 0:
                         try:
                             summary = self._testrail.get_run_summary(rid)
@@ -704,7 +704,7 @@ class ContextCollector:
                         except Exception as exc:
                             logger.warning("TestRail run %d fetch failed: %s", rid, exc)
 
-                # If no relevant runs found, include the most recent as fallback
+                # Fallback: most recent
                 if not results and recent_runs:
                     rid = recent_runs[0].get("id")
                     if rid:
@@ -768,7 +768,7 @@ class ContextCollector:
         except Exception as exc:
             logger.debug("RAG prior-defect query failed for %s: %s", issue_key, exc)
 
-        # Sort by relevance descending, keep top-k
+        # Sort and trim
         snippets.sort(key=lambda s: s.relevance_score, reverse=True)
         return snippets[:settings.rag.top_k]
 

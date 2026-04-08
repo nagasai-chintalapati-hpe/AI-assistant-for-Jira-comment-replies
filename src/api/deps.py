@@ -29,19 +29,19 @@ from src.storage.sqlite_store import SQLiteDraftStore, SQLiteIdempotencyStore
 
 logger = logging.getLogger(__name__)
 
-# --- Persistent stores ---
+# Stores
 
 draft_store = SQLiteDraftStore(db_path=settings.app.db_path)
 _idempotency_store = SQLiteIdempotencyStore(db_path=settings.app.db_path)
 event_filter = EventFilter(idempotency_store=_idempotency_store)
 
-# --- LLM / Classifier / Drafter ---
+# LLM / Agent
 
 _llm_client = get_llm_client()
 classifier = CommentClassifier(llm_client=_llm_client)
 drafter = ResponseDrafter(llm_client=_llm_client)
 
-# --- Integration connectors (each degrades gracefully when unconfigured) ---
+# Integrations
 
 _log_lookup = LogLookupService()
 _testrail_client = TestRailClient()
@@ -73,11 +73,11 @@ except Exception:
 
 _broker = MessageBroker()
 
-# --- Rate limiter (per-IP, Redis-backed or in-memory) ---
+# Rate limiter
 
 _rate_limiter = _RateLimiter(rpm=settings.rate_limit.max_requests_per_minute)
 
-# --- Notification channels (Teams / Email) ---
+# Notifications
 
 _teams = TeamsNotifier(webhook_url=os.getenv("TEAMS_WEBHOOK_URL"))
 _email = EmailNotifier(
@@ -94,7 +94,7 @@ _email = EmailNotifier(
 )
 notifier = NotificationService(teams=_teams, email=_email)
 
-# --- RAG pipeline (lazy-initialised) ---
+# RAG pipeline
 
 _rag_engine = None
 _rag_ingester = None
