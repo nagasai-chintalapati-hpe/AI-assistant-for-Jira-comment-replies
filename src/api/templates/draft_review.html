@@ -328,7 +328,7 @@
       <div class="evidence-scroll" style="max-height:180px">
         <ul class="list-group list-group-flush">
           {% for e in draft.evidence_used %}
-          <li class="list-group-item small text-muted">{{ e }}</li>
+          <li class="list-group-item small text-muted">{{ e | urlize(target='_blank') }}</li>
           {% endfor %}
         </ul>
       </div>

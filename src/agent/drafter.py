@@ -16,26 +16,19 @@ logger = logging.getLogger(__name__)
 # Response templates per classification bucket
 TEMPLATES: dict[CommentType, str] = {
     CommentType.CANNOT_REPRODUCE: (
-        "Thanks for the update. We were able to reproduce on "
+        "Thanks for the update. We were able to reproduce this on "
         "**{environment}** (Build {build_version}).\n\n"
-        "**Observed:** {observation}\n\n"
-        "**Repro steps (minimal):**\n{repro_steps}\n\n"
-        "{pr_evidence}"
         "Could you confirm:\n"
         "• Which build/version did you test on?\n"
-        "• Your environment (OS, browser, tenant config)?\n"
-        "• Whether feature flag `{feature_flag}` is enabled?\n\n"
-        "**Next:** If you share your test env/build, we can validate parity; "
-        "otherwise we recommend retesting on the latest staging build."
+        "• Your environment details (OS, browser, tenant config)?\n\n"
+        "**Next:** Share your test environment so we can validate parity, "
+        "or retest on the latest staging build."
     ),
     CommentType.NEED_MORE_INFO: (
-        "Thanks for flagging this. Here's what we already have:\n"
-        "{existing_evidence}\n\n"
+        "Thanks for flagging this. We've reviewed the available evidence "
+        "but need more detail to narrow down the root cause.\n\n"
         "We're still missing:\n{missing_items}\n\n"
-        "Could you please provide:\n"
-        "• Exact repro steps + correlation IDs\n"
-        "• Logs for **{component}** in the time window **{time_window}**\n\n"
-        "Once we have this, we'll be able to narrow down the root cause."
+        "Please provide the above so we can proceed with investigation."
     ),
     CommentType.BY_DESIGN: (
         "Thanks for raising this. Based on the specification, this is "
@@ -48,8 +41,7 @@ TEMPLATES: dict[CommentType, str] = {
     ),
     CommentType.FIXED_VALIDATE: (
         "A fix has been deployed.\n\n"
-        "**Fix version/commit/build:** {fix_version}\n"
-        "{pr_evidence}"
+        "**Fix version/commit/build:** {fix_version}\n\n"
         "**Focused retest checklist:**\n{retest_checklist}\n\n"
         "Please verify in **{target_env}** and update the ticket status."
     ),
@@ -89,32 +81,29 @@ TEMPLATES: dict[CommentType, str] = {
     ),
     CommentType.OTHER: (
         "Thanks for the update on **{issue_key}** – *{summary}*\n\n"
-        "{existing_evidence}\n\n"
-        "**Current status:** {environment} | Build {build_version}\n\n"
-        "Could you confirm:\n"
-        "• Is this issue still occurring or has it been resolved?\n"
-        "• If resolved, what was the fix/workaround so we can document it?\n"
-        "• If still open, any additional context we should capture?\n\n"
-        "We'll update the ticket status accordingly."
+        "Based on our review, here is our assessment and recommended next steps."
     ),
 }
 
 _REFINE_SYSTEM = """\
 You are a senior QA engineer at HPE writing a reply to a developer's comment on a Jira defect ticket.
 
-Rewrite the DRAFT into a professional, concise, and actionable reply.
+Your job is NOT to parrot the draft template. Use the TICKET DESCRIPTION, DEVELOPER COMMENT, CLASSIFICATION, and EVIDENCE to write a substantive, issue-aware reply that demonstrates you understand the specific defect.
 
-Rules:
-1. DO NOT embed raw integration details in the reply — no Confluence page excerpts, TestRail tables, Jenkins URLs, PR descriptions, or RAG snippets. Those belong in a separate evidence panel the reviewer already sees.
-2. You may reference evidence *briefly* (e.g. "the related PR has been merged", "TestRail shows a 95% pass rate") but never paste URLs, commit SHAs, long excerpts, or build logs into the reply.
-3. Ground every claim in the EVIDENCE provided — never invent builds, versions, links, PRs, or test results.
-4. Delete any line with "N/A", "TBD", "See attached", or generic placeholders — if you don't have real data, omit the section entirely.
-5. Start with a one-line acknowledgment, then go straight to the substance.
-6. End with a clear, specific next action for the developer (not vague asks).
-7. If evidence is thin, state exactly what's missing and what the developer should provide.
-8. Keep it under 150 words. Be direct and assertive — no filler, no pleasantries beyond the opening line.
-9. Use bullet points for lists of 2+ items.
-10. Do NOT wrap output in markdown code fences. Output ONLY the final reply text.
+Structure:
+1. One-line acknowledgment that names the specific issue (not generic).
+2. Your assessment: what the evidence tells you about this defect — root cause hypothesis, affected versions/components, scope of impact. Be specific to THIS issue.
+3. Targeted questions: ask 2-3 precise technical questions that would help resolve THIS defect (not generic "is it still happening?" questions). Reference specific details from the description.
+4. Clear next step: one concrete action for the developer.
+
+Strict rules:
+- DO NOT list attachment filenames, Confluence excerpts, PR descriptions, Jenkins URLs, or TestRail tables. The reviewer sees those in a separate evidence panel.
+- You may reference evidence briefly ("a related PR is open", "TestRail shows 95% pass rate") but never paste raw data.
+- Ground claims in EVIDENCE — never invent builds, versions, PRs, or test results.
+- Remove any line with "N/A", "TBD", or placeholders — if you lack data, omit it.
+- Keep it under 150 words. Be direct and assertive.
+- Use bullet points for lists of 2+ items.
+- Do NOT wrap in markdown code fences. Output ONLY the reply text.
 """
 
 # Suggested-action and label mappings per classification
@@ -169,9 +158,17 @@ class ResponseDrafter:
         """Generate a draft response for the given comment and context."""
         template_body = self._fill_template(comment, classification, context)
         if self._llm.enabled:
-            draft_body = self._refine_with_copilot(
+            refined = self._refine_with_copilot(
                 template_body, comment, classification, context,
-            ) or self._clean_template_output(template_body)
+            )
+            if refined:
+                draft_body = refined
+            else:
+                logger.warning(
+                    "LLM refinement failed for %s — using template fallback",
+                    comment.issue_key,
+                )
+                draft_body = self._clean_template_output(template_body)
         else:
             draft_body = self._clean_template_output(template_body)
 
@@ -542,7 +539,9 @@ class ResponseDrafter:
         for e in (context.log_entries or [])[:5]:
             ev.append(f"Log ({e.source}): {e.correlation_id or e.source}")
         for tr in context.testrail_results or []:
-            ev.append(f"TestRail run: {tr.get('name', 'unknown')} ({tr.get('pass_rate', 0)}% pass)")
+            url = tr.get('url', '')
+            label = f"TestRail run: {tr.get('name', 'unknown')} ({tr.get('pass_rate', 0)}% pass)"
+            ev.append(f"{label} — {url}" if url else label)
         if context.build_metadata:
             bm = context.build_metadata
             parts = [p for p in [f"commit {bm['commit']}" if bm.get("commit") else None,
@@ -559,8 +558,10 @@ class ResponseDrafter:
         for e in (context.elk_log_entries or [])[:5]:
             ev.append(f"ELK log ({e.level or 'INFO'}): {e.correlation_id or 'elk'}")
         for tr in context.testrail_marker_results or []:
-            ev.append(f"TestRail (marker={tr.get('marker', '')}): {tr.get('name', 'run')} "
-                       f"({tr.get('pass_rate', 0)}% pass, {tr.get('total', 0)} tests)")
+            url = tr.get('url', '')
+            label = (f"TestRail (marker={tr.get('marker', '')}): {tr.get('name', 'run')} "
+                     f"({tr.get('pass_rate', 0)}% pass, {tr.get('total', 0)} tests)")
+            ev.append(f"{label} — {url}" if url else label)
         for cc in context.confluence_citations or []:
             ev.append(f"Confluence: {cc.get('source', 'page')}")
         if context.jenkins_test_report:
@@ -572,7 +573,9 @@ class ResponseDrafter:
             ev.append(f"Jenkins console: {errs.get('error_count', 0)} errors, "
                        f"{errs.get('exception_count', 0)} exceptions")
         for b in (context.jenkins_build_info or [])[:3]:
-            ev.append(f"Jenkins build #{b.get('build_number', '?')}: {b.get('result', '?')}")
+            url = b.get('url', '')
+            label = f"Jenkins build #{b.get('build_number', '?')}: {b.get('result', '?')}"
+            ev.append(f"{label} — {url}" if url else label)
         if context.pipeline_correlation:
             pc = context.pipeline_correlation
             ev.append(f"Pipeline correlation: {pc.get('jenkins_build_count', 0)} builds, "
