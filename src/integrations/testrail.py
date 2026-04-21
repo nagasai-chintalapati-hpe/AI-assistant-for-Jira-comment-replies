@@ -225,7 +225,7 @@ class TestRailClient:
         return {
             "run_id": run_id,
             "name": run.get("name", ""),
-            "url": run.get("url", f"{self._base_url}/index.php?/runs/view/{run_id}"),
+            "url": run.get("url") or f"{self._base_url}/index.php?/runs/view/{run_id}",
             "passed": passed,
             "failed": failed,
             "blocked": blocked,
@@ -341,7 +341,7 @@ class TestRailClient:
             "run_id": run_id,
             "name": run.get("name", ""),
             "marker": marker,
-            "url": run.get("url", f"{self._base_url}/index.php?/runs/view/{run_id}"),
+            "url": run.get("url") or f"{self._base_url}/index.php?/runs/view/{run_id}",
             "passed": passed,
             "failed": failed,
             "blocked": blocked,

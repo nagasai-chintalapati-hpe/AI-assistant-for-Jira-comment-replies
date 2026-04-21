@@ -67,8 +67,8 @@ class TestNewCommentTypes:
 
 class TestNewKeywordClassification:
     @pytest.fixture
-    def classifier(self):
-        return CommentClassifier()  # keyword-only mode
+    def classifier(self, disabled_llm):
+        return CommentClassifier(llm_client=disabled_llm) 
 
     def test_duplicate_keyword(self, classifier):
         comment = _make_comment("This is a duplicate of DEFECT-50, already reported.")

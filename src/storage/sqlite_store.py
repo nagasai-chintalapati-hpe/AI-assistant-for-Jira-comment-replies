@@ -198,8 +198,8 @@ class SQLiteDraftStore:
         """Mark a draft as posted to Jira.  Returns True if found."""
         now = datetime.now(timezone.utc).isoformat()
         result = self._conn.execute(
-            "UPDATE drafts SET posted_at = ? WHERE draft_id = ?",
-            (now, draft_id),
+            "UPDATE drafts SET status = ?, posted_at = ? WHERE draft_id = ?",
+            (DraftStatus.POSTED.value, now, draft_id),
         )
         if result.rowcount == 0:
             return False
@@ -210,6 +210,7 @@ class SQLiteDraftStore:
         ).fetchone()
         if row:
             data = json.loads(row["data_json"])
+            data["status"] = DraftStatus.POSTED.value
             data["posted_at"] = now
             self._conn.execute(
                 "UPDATE drafts SET data_json = ? WHERE draft_id = ?",

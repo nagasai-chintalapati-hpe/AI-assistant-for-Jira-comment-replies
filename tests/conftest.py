@@ -2,7 +2,23 @@
 
 import pytest
 from datetime import datetime, timezone
+from unittest.mock import MagicMock
 from src.models.comment import Comment
+
+
+class _DisabledLLMClient:
+    """A stub LLM client that reports itself as disabled (no API key)."""
+    enabled = False
+    backend = "none"
+
+    def complete(self, **kwargs):
+        return None
+
+
+@pytest.fixture
+def disabled_llm():
+    """Return a disabled LLM client for deterministic template-only tests."""
+    return _DisabledLLMClient()
 
 
 @pytest.fixture

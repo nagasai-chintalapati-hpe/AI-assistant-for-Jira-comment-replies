@@ -12,6 +12,7 @@ class DraftStatus(str, Enum):
     GENERATED = "generated"
     APPROVED = "approved"
     REJECTED = "rejected"
+    POSTED = "posted"
 
 
 class Draft(BaseModel):
@@ -21,12 +22,12 @@ class Draft(BaseModel):
     issue_key: str
     in_reply_to_comment_id: str
     created_at: datetime
-    created_by: str  # System user/email
+    created_by: str 
     
     # Draft content
     body: str
     original_body: Optional[str] = None     # AI-generated body before any human edits
-    suggested_actions: Optional[list[dict[str, str]]] = None  # {action, value}
+    suggested_actions: Optional[list[dict[str, str]]] = None  
     suggested_labels: Optional[list[str]] = None
     confidence_score: float  # 0.0 to 1.0
     

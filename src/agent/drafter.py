@@ -483,7 +483,7 @@ class ResponseDrafter:
         for e in (context.log_entries or [])[:5]:
             c.append({"source": f"Log ({e.source})", "excerpt": e.message[:200], "type": "log"})
         for tr in context.testrail_results or []:
-            c.append({"source": f"TestRail: {tr.get('name', 'run')}", "url": tr.get("url", ""),
+            c.append({"source": f"TestRail: {tr.get('name', 'run')}", "url": tr.get("url") or "",
                        "excerpt": f"{tr.get('pass_rate', 0)}% pass, {tr.get('failed', 0)} failed",
                        "type": "testrail"})
         for pr in context.git_prs or []:
@@ -498,7 +498,7 @@ class ResponseDrafter:
             c.append({"source": f"ELK log{cid}", "excerpt": e.message[:200], "type": "elk"})
         for tr in context.testrail_marker_results or []:
             c.append({"source": f"TestRail (marker={tr.get('marker', '?')}): {tr.get('name', 'run')}",
-                       "url": tr.get("url", ""), "type": "testrail",
+                       "url": tr.get("url") or "", "type": "testrail",
                        "excerpt": f"{tr.get('pass_rate', 0)}% pass, {tr.get('failed', 0)} failed (marker-filtered)"})
         for cc in context.confluence_citations or []:
             c.append({"source": cc.get("source", "Confluence"), "url": cc.get("url", ""),
@@ -539,7 +539,7 @@ class ResponseDrafter:
         for e in (context.log_entries or [])[:5]:
             ev.append(f"Log ({e.source}): {e.correlation_id or e.source}")
         for tr in context.testrail_results or []:
-            url = tr.get('url', '')
+            url = tr.get('url') or ''
             label = f"TestRail run: {tr.get('name', 'unknown')} ({tr.get('pass_rate', 0)}% pass)"
             ev.append(f"{label} — {url}" if url else label)
         if context.build_metadata:
@@ -558,7 +558,7 @@ class ResponseDrafter:
         for e in (context.elk_log_entries or [])[:5]:
             ev.append(f"ELK log ({e.level or 'INFO'}): {e.correlation_id or 'elk'}")
         for tr in context.testrail_marker_results or []:
-            url = tr.get('url', '')
+            url = tr.get('url') or ''
             label = (f"TestRail (marker={tr.get('marker', '')}): {tr.get('name', 'run')} "
                      f"({tr.get('pass_rate', 0)}% pass, {tr.get('total', 0)} tests)")
             ev.append(f"{label} — {url}" if url else label)

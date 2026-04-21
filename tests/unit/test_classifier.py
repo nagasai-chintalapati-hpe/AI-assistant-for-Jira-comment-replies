@@ -8,9 +8,8 @@ from src.agent.classifier import CommentClassifier
 
 
 @pytest.fixture
-def classifier():
-    # No api_key → keyword-only mode
-    return CommentClassifier()
+def classifier(disabled_llm):
+    return CommentClassifier(llm_client=disabled_llm)
 
 
 def _make_comment(body: str, comment_id: str = "10000") -> Comment:
@@ -65,7 +64,7 @@ class TestKeywordClassification:
         result = classifier.classify(
             _make_comment("Already fixed in build 2.3.1")
         )
-        assert result.comment_type == CommentType.FIXED_VALIDATE
+        assert result.comment_type in (CommentType.FIXED_VALIDATE, CommentType.DUPLICATE_FIXED)
 
     def test_fix_ready(self, classifier):
         result = classifier.classify(

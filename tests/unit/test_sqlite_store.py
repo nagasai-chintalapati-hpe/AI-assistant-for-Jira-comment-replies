@@ -159,6 +159,7 @@ class TestStatusUpdates:
         assert result is True
         draft = store.get("draft_001")
         assert draft["posted_at"] is not None
+        assert draft["status"] == "posted"
 
     def test_mark_posted_nonexistent_returns_false(self, store):
         assert store.mark_posted("draft_999") is False
