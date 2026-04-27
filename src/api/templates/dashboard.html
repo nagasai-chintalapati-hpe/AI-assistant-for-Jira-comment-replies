@@ -227,6 +227,58 @@
   </div>
 </div>
 
+<!-- Severity / Priority Audit Section -->
+<div class="row g-3 mb-4">
+  <div class="col-12">
+    <div class="card">
+      <div class="card-header d-flex justify-content-between align-items-center">
+        <span><i class="bi bi-list-check text-danger"></i> Severity / Priority Audit</span>
+        <span class="badge bg-danger">{{ audit_attention_count }} item{{ 's' if audit_attention_count != 1 }} need attention</span>
+      </div>
+      <div class="card-body p-0">
+        <div class="table-responsive">
+          <table class="table table-sm mb-0">
+            <thead>
+              <tr>
+                <th>Issue</th>
+                <th>Date</th>
+                <th>Criteria</th>
+                <th>Current</th>
+                <th>Recommended</th>
+                <th>Status</th>
+                <th>Finding</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% if audit_items %}
+              {% for item in audit_items %}
+              <tr class="{% if item.needs_attention %}table-danger{% endif %}">
+                <td><a href="/ui/drafts/{{ item.draft_id }}" class="fw-bold">{{ item.issue_key }}</a></td>
+                <td class="text-muted small">{{ (item.created_at or '')[:16] }}</td>
+                <td>{{ item.criteria_profile|replace('_', ' ')|title }}</td>
+                <td>{{ item.current_severity }} / {{ item.current_priority }}</td>
+                <td><span class="badge {% if item.needs_attention %}bg-danger{% else %}bg-success{% endif %}">{{ item.recommended_severity }} / {{ item.recommended_priority }}</span></td>
+                <td>
+                  {% if item.needs_attention %}
+                  <i class="bi bi-exclamation-triangle text-danger"></i> Review
+                  {% else %}
+                  <i class="bi bi-check-circle text-success"></i> OK
+                  {% endif %}
+                </td>
+                <td class="small">{{ item.finding }}</td>
+              </tr>
+              {% endfor %}
+              {% else %}
+              <tr><td colspan="7" class="text-center text-muted py-3">No severity or priority audits recorded yet</td></tr>
+              {% endif %}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
 <!-- Severity Challenger Section -->
 <div class="row g-3 mb-4">
   <div class="col-12">

@@ -24,17 +24,17 @@ _SEVERITY_RANK: dict[str, int] = {
     "p1 high": 3,
     "major": 3,
     "high": 3,
-    "p2": 2,
-    "p2 medium": 2,
-    "medium": 2,
-    "normal": 2,
-    "p3": 1,
-    "p3 low": 1,
-    "minor": 1,
-    "low": 1,
-    "p4": 0,
-    "lowest": 0,
-    "trivial": 0,
+    "p2": 3,
+    "p2 medium": 3,
+    "medium": 3,
+    "normal": 3,
+    "minor": 2,
+    "p3": 2,
+    "p3 low": 2,
+    "low": 2,
+    "lowest": 2,
+    "p4": 2,
+    "trivial": 2,
 }
 
 # Rovo change patterns
@@ -90,6 +90,29 @@ _ROVO_AUTHOR_PATTERNS = [
     re.compile(r"ai[\s-]*agent", re.IGNORECASE),
 ]
 
+_PRIORITY_BY_SEVERITY = {
+    "Blocker": "P0",
+    "Critical": "P1",
+    "Major": "P2",
+    "Minor": "P3",
+}
+
+_PRIORITY_CANONICAL = {
+    "p0": "P0",
+    "highest": "P0",
+    "immediate": "P0",
+    "showstopper": "P0",
+    "p1": "P1",
+    "high": "P1",
+    "p2": "P2",
+    "medium": "P2",
+    "normal": "P2",
+    "p3": "P3",
+    "low": "P3",
+    "lowest": "P3",
+    "p4": "P3",
+}
+
 
 @dataclass
 class RovoSeverityChange:
@@ -117,8 +140,63 @@ class SeverityEvidence:
     affected_version_count: int = 0
     pr_count: int = 0               # related PRs (indicates active development)
     description_severity_hints: list[str] = field(default_factory=list)
+    workflow_blocker_terms: list[str] = field(default_factory=list)
+    no_workaround_detected: bool = False
     rovo_reasoning_counters: list[str] = field(default_factory=list)  # rebuttals to Rovo's logic
     rovo_comment_detected: bool = False  # True if Rovo change found in comment body
+
+
+@dataclass
+class SeverityPriorityAuditResult:
+    """Validation + recommendation for Jira severity and priority fields."""
+
+    criteria_profile: str
+    current_severity: str
+    current_priority: str
+    recommended_severity: str
+    recommended_priority: str
+    recommended_rank: int
+    severity_present: bool
+    priority_present: bool
+    severity_valid: bool
+    priority_valid: bool
+    priority_matches_severity: bool
+    needs_attention: bool
+    findings: list[str]
+    evidence: SeverityEvidence
+    confidence: float
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "criteria_profile": self.criteria_profile,
+            "current_severity": self.current_severity,
+            "current_priority": self.current_priority,
+            "recommended_severity": self.recommended_severity,
+            "recommended_priority": self.recommended_priority,
+            "recommended_rank": self.recommended_rank,
+            "severity_present": self.severity_present,
+            "priority_present": self.priority_present,
+            "severity_valid": self.severity_valid,
+            "priority_valid": self.priority_valid,
+            "priority_matches_severity": self.priority_matches_severity,
+            "needs_attention": self.needs_attention,
+            "findings": self.findings,
+            "evidence": {
+                "outage_keyword_matches": self.evidence.outage_keyword_matches,
+                "title_severity_score": self.evidence.title_severity_score,
+                "pattern_count": self.evidence.pattern_count,
+                "jenkins_failure_count": self.evidence.jenkins_failure_count,
+                "testrail_failure_count": self.evidence.testrail_failure_count,
+                "customer_escalation": self.evidence.customer_escalation,
+                "linked_blocker_count": self.evidence.linked_blocker_count,
+                "affected_version_count": self.evidence.affected_version_count,
+                "pr_count": self.evidence.pr_count,
+                "description_severity_hints": self.evidence.description_severity_hints,
+                "workflow_blocker_terms": self.evidence.workflow_blocker_terms,
+                "no_workaround_detected": self.evidence.no_workaround_detected,
+            },
+            "confidence": self.confidence,
+        }
 
 
 @dataclass
@@ -158,6 +236,8 @@ class SeverityChallengeResult:
                 "affected_version_count": self.evidence.affected_version_count,
                 "pr_count": self.evidence.pr_count,
                 "description_severity_hints": self.evidence.description_severity_hints,
+                "workflow_blocker_terms": self.evidence.workflow_blocker_terms,
+                "no_workaround_detected": self.evidence.no_workaround_detected,
                 "rovo_reasoning_counters": self.evidence.rovo_reasoning_counters,
                 "rovo_comment_detected": self.evidence.rovo_comment_detected,
             },
@@ -176,6 +256,86 @@ class SeverityChallenger:
     def __init__(self, jira_client=None):
         self._jira = jira_client
 
+    def audit_fields(
+        self,
+        context: ContextCollectionResult,
+        pattern_note: Optional[str] = None,
+        jira_client=None,
+    ) -> SeverityPriorityAuditResult:
+        """Validate Jira severity/priority fields and recommend values."""
+        jira = jira_client or self._jira
+        ctx = context.issue_context
+        evidence = self._gather_evidence(context, pattern_note, jira)
+        criteria_profile = self._select_criteria_profile(ctx)
+        recommended_rank = self._compute_severity_rank(evidence, criteria_profile)
+        recommended_severity = self._rank_to_label(recommended_rank)
+        recommended_priority = _PRIORITY_BY_SEVERITY[recommended_severity]
+
+        current_severity = (ctx.severity or "").strip()
+        current_priority = (ctx.priority or "").strip()
+        severity_present = bool(current_severity)
+        priority_present = bool(current_priority)
+
+        canonical_severity = self._canonical_severity(current_severity)
+        canonical_priority = self._canonical_priority(current_priority)
+        severity_valid = canonical_severity is not None
+        priority_valid = canonical_priority is not None
+        priority_matches_severity = bool(
+            canonical_severity and canonical_priority and _PRIORITY_BY_SEVERITY[canonical_severity] == canonical_priority
+        )
+
+        findings: list[str] = []
+        if not severity_present:
+            findings.append("Severity is not set on the Jira issue.")
+        elif not severity_valid:
+            findings.append(
+                f"Severity value '{current_severity}' is not recognised under the configured classification policy."
+            )
+
+        if not priority_present:
+            findings.append("Priority is not set on the Jira issue.")
+        elif not priority_valid:
+            findings.append(
+                f"Priority value '{current_priority}' does not map cleanly to the P0-P3 policy."
+            )
+
+        if canonical_severity and canonical_priority and not priority_matches_severity:
+            findings.append(
+                f"Severity {canonical_severity} should map to priority {_PRIORITY_BY_SEVERITY[canonical_severity]}, but the issue is currently {canonical_priority}."
+            )
+
+        if not findings:
+            findings.append(
+                f"Severity and priority are set and aligned to the {criteria_profile.replace('_', ' ').title()} criteria."
+            )
+
+        if findings[0].startswith("Severity and priority are set"):
+            findings.append(
+                f"Recommended classification remains {recommended_severity} / {recommended_priority} based on the current evidence signals."
+            )
+        else:
+            findings.append(
+                f"Recommended classification is {recommended_severity} / {recommended_priority} based on the current evidence signals."
+            )
+
+        return SeverityPriorityAuditResult(
+            criteria_profile=criteria_profile,
+            current_severity=current_severity,
+            current_priority=current_priority,
+            recommended_severity=recommended_severity,
+            recommended_priority=recommended_priority,
+            recommended_rank=recommended_rank,
+            severity_present=severity_present,
+            priority_present=priority_present,
+            severity_valid=severity_valid,
+            priority_valid=priority_valid,
+            priority_matches_severity=priority_matches_severity,
+            needs_attention=not (severity_present and priority_present and severity_valid and priority_valid and priority_matches_severity),
+            findings=findings,
+            evidence=evidence,
+            confidence=self._compute_confidence(evidence, True),
+        )
+
     def evaluate(
         self,
         context: ContextCollectionResult,
@@ -183,15 +343,9 @@ class SeverityChallenger:
         jira_client=None,
     ) -> Optional[SeverityChallengeResult]:
         """Run severity challenge evaluation. Returns None if no Rovo change detected."""
-        jira = jira_client or self._jira
         ctx = context.issue_context
 
-        # 1. Detect Rovo severity changes in changelog
         rovo_changes = self._detect_rovo_changes(ctx.changelog or [])
-
-        # 1b. Also scan comments for Rovo severity announcements
-        #     Real-world: "Automation for Jira" posts a comment like
-        #     "Severity has been changed from P0 Critical to P1 High"
         comment_changes = self._detect_rovo_changes_in_comments(
             ctx.last_comments or []
         )
@@ -206,34 +360,31 @@ class SeverityChallenger:
             ctx.issue_key,
         )
 
-        # 2. Gather evidence signals
-        evidence = self._gather_evidence(context, pattern_note, jira)
-
-        # 3. Compute recommended severity
-        recommended_rank = self._compute_severity_rank(evidence)
-        recommended_severity = self._rank_to_label(recommended_rank)
-
-        # Get current severity (from the most recent Rovo change)
+        audit = self.audit_fields(
+            context,
+            pattern_note=pattern_note,
+            jira_client=jira_client,
+        )
+        recommended_rank = audit.recommended_rank
+        recommended_severity = audit.recommended_severity
         latest_change = rovo_changes[-1]
         current_rank = self._normalize_rank(latest_change.to_value)
-
-        # 4. Determine if we disagree
         disagrees = recommended_rank > current_rank
+        confidence = self._compute_confidence(audit.evidence, disagrees)
 
-        # 5. Compute confidence
-        confidence = self._compute_confidence(evidence, disagrees)
-
-        # 6. Build challenge note
         challenge_note = None
         if disagrees:
             challenge_note = self._build_challenge_note(
-                rovo_changes, evidence, recommended_severity,
-                latest_change.to_value, ctx.issue_key,
+                rovo_changes,
+                audit.evidence,
+                recommended_severity,
+                latest_change.to_value,
+                ctx.issue_key,
             )
 
         result = SeverityChallengeResult(
             rovo_changes=rovo_changes,
-            evidence=evidence,
+            evidence=audit.evidence,
             recommended_severity=recommended_severity,
             recommended_rank=recommended_rank,
             current_rank=current_rank,
@@ -244,8 +395,7 @@ class SeverityChallenger:
 
         if disagrees:
             logger.warning(
-                "Severity challenge on %s: Rovo set %s → %s, "
-                "but evidence suggests %s (confidence=%.2f)",
+                "Severity challenge on %s: Rovo set %s → %s, but evidence suggests %s (confidence=%.2f)",
                 ctx.issue_key,
                 latest_change.from_value,
                 latest_change.to_value,
@@ -448,6 +598,20 @@ class SeverityChallenger:
         for pat, hint in hint_patterns:
             if re.search(pat, desc_lower):
                 ev.description_severity_hints.append(hint)
+                if hint == "No workaround available":
+                    ev.no_workaround_detected = True
+
+        workflow_terms = [
+            "setup",
+            "update",
+            "upgrade",
+            "cluster expansion",
+            "add node",
+            "greenfield",
+        ]
+        for term in workflow_terms:
+            if term in text_to_scan and term not in ev.workflow_blocker_terms:
+                ev.workflow_blocker_terms.append(term)
 
         # 11. Rovo reasoning counter-analysis (scan comments for Rovo's logic)
         self._counter_rovo_reasoning(ctx, ev)
@@ -537,53 +701,58 @@ class SeverityChallenger:
 
     # Severity computation
 
-    def _compute_severity_rank(self, ev: SeverityEvidence) -> int:
-        """Compute a recommended severity rank (0–5) from evidence signals."""
-        score = 0
+    def _compute_severity_rank(
+        self,
+        ev: SeverityEvidence,
+        criteria_profile: str = "standard_hpe",
+    ) -> int:
+        """Compute a recommended severity rank from evidence signals."""
+        score = 2
 
-        # Title markers are strongest signal
         score = max(score, ev.title_severity_score)
 
-        # Outage keywords
         if len(ev.outage_keyword_matches) >= 3:
-            score = max(score, 5)  # Blocker
+            score = max(score, 5)
         elif len(ev.outage_keyword_matches) >= 1:
-            score = max(score, 4)  # Critical
+            score = max(score, 4)
 
-        # Customer escalation
         if ev.customer_escalation:
-            score = max(score, 4)  # At least Critical
+            score = max(score, 4)
 
-        # Pattern count (systemic issue)
         if ev.pattern_count >= 5:
             score = max(score, 4)
         elif ev.pattern_count >= 3:
             score = max(score, 3)
 
-        # Jenkins failures
         if ev.jenkins_failure_count >= 3:
             score = max(score, 3)
         elif ev.jenkins_failure_count >= 1:
             score = max(score, 2)
 
-        # TestRail failures
         if ev.testrail_failure_count >= 5:
             score = max(score, 3)
         elif ev.testrail_failure_count >= 1:
             score = max(score, 2)
 
-        # Linked blockers
         if ev.linked_blocker_count >= 1:
             score = max(score, 3)
 
-        # Description hints
-        if any("data loss" in h.lower() or "security" in h.lower()
-               for h in ev.description_severity_hints):
+        if any("data loss" in h.lower() or "security" in h.lower() for h in ev.description_severity_hints):
             score = max(score, 4)
 
-        # Active PR development
         if ev.pr_count >= 1:
-            score = max(score, 2)  # At least Medium
+            score = max(score, 2)
+
+        if criteria_profile == "pcfs":
+            if ev.workflow_blocker_terms and (ev.no_workaround_detected or ev.customer_escalation or ev.outage_keyword_matches):
+                score = max(score, 5)
+            elif ev.workflow_blocker_terms:
+                score = max(score, 4)
+        else:
+            if ev.no_workaround_detected and (
+                ev.outage_keyword_matches or ev.linked_blocker_count or any("data loss" in h.lower() for h in ev.description_severity_hints)
+            ):
+                score = max(score, 5)
 
         return min(score, 5)
 
@@ -620,20 +789,47 @@ class SeverityChallenger:
     @staticmethod
     def _normalize_rank(label: str) -> int:
         """Convert a priority/severity label to a numeric rank."""
-        return _SEVERITY_RANK.get(label.lower().strip(), 2)
+        return _SEVERITY_RANK.get(label.lower().strip(), 3)
 
     @staticmethod
     def _rank_to_label(rank: int) -> str:
-        """Convert a numeric rank to a human-readable label."""
+        """Convert a numeric rank to a human-readable severity label."""
         rank_map = {
             5: "Blocker",
             4: "Critical",
             3: "Major",
-            2: "Medium",
+            2: "Minor",
             1: "Minor",
-            0: "Trivial",
+            0: "Minor",
         }
-        return rank_map.get(rank, "Medium")
+        return rank_map.get(rank, "Major")
+
+    @staticmethod
+    def _canonical_severity(label: str) -> Optional[str]:
+        """Normalise severity values to the supported document taxonomy."""
+        normalized = (label or "").strip().lower()
+        mapping = {
+            "blocker": "Blocker",
+            "critical": "Critical",
+            "major": "Major",
+            "minor": "Minor",
+        }
+        return mapping.get(normalized)
+
+    @staticmethod
+    def _canonical_priority(label: str) -> Optional[str]:
+        """Normalise priority values to the P0-P3 taxonomy."""
+        normalized = (label or "").strip().lower()
+        return _PRIORITY_CANONICAL.get(normalized)
+
+    @staticmethod
+    def _select_criteria_profile(ctx) -> str:
+        """Pick PCFS rules when the Jira context clearly points to PCFS."""
+        parts = [ctx.issue_key, ctx.summary, ctx.description]
+        parts.extend(ctx.labels or [])
+        parts.extend(ctx.components or [])
+        joined = " ".join(part for part in parts if part).lower()
+        return "pcfs" if "pcfs" in joined else "standard_hpe"
 
     # Note generation
 

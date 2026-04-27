@@ -131,6 +131,7 @@ class ContextCollector:
                 issue_type=fields.get("issuetype", {}).get("name", ""),
                 status=fields.get("status", {}).get("name", ""),
                 priority=fields.get("priority", {}).get("name", ""),
+                severity=self._extract_severity(fields),
                 environment=fields.get("environment") or "",
                 versions=self._extract_versions(fields),
                 components=self._extract_components(fields),
@@ -771,6 +772,18 @@ class ContextCollector:
         # Sort and trim
         snippets.sort(key=lambda s: s.relevance_score, reverse=True)
         return snippets[:settings.rag.top_k]
+
+    @staticmethod
+    def _extract_severity(fields: dict) -> str:
+        """Extract the configured Jira severity field as a display string."""
+        raw = fields.get(settings.jira.severity_field_id)
+        if raw is None:
+            raw = fields.get("Severity")
+        if isinstance(raw, dict):
+            return raw.get("value") or raw.get("name") or ""
+        if isinstance(raw, str):
+            return raw
+        return ""
 
     @staticmethod
     def _extract_versions(fields: dict) -> list[str]:

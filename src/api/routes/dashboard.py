@@ -108,9 +108,33 @@ async def dashboard_page(request: Request):
     metrics = draft_store.get_metrics()
     daily_volume = draft_store.get_daily_volume(days=30)
     severity_challenges = draft_store.get_severity_challenges(limit=50)
+    recent_drafts = draft_store.list_all(limit=100)
     top_issues = draft_store.get_top_issues(limit=10)
     repos_stats = draft_store.get_repos_stats()
     response_times = draft_store.get_avg_response_time_by_day(days=30)
+
+    audit_items: list[dict] = []
+    audit_attention_count = 0
+    for draft in recent_drafts:
+        audit = draft.get("severity_priority_audit") or {}
+        if not audit:
+            continue
+        if audit.get("needs_attention"):
+            audit_attention_count += 1
+        findings = audit.get("findings") or []
+        audit_items.append({
+            "draft_id": draft.get("draft_id"),
+            "issue_key": draft.get("issue_key"),
+            "created_at": draft.get("created_at", ""),
+            "criteria_profile": audit.get("criteria_profile", "standard_hpe"),
+            "current_severity": audit.get("current_severity") or "<missing>",
+            "current_priority": audit.get("current_priority") or "<missing>",
+            "recommended_severity": audit.get("recommended_severity", "?"),
+            "recommended_priority": audit.get("recommended_priority", "?"),
+            "needs_attention": audit.get("needs_attention", False),
+            "finding": findings[0] if findings else "No findings",
+        })
+    audit_items = audit_items[:25]
 
     # Process severity items for the table
     severity_items: list[dict] = []
@@ -155,6 +179,8 @@ async def dashboard_page(request: Request):
             "daily_volume": daily_volume,
             "severity_items": severity_items,
             "override_count": override_count,
+            "audit_items": audit_items,
+            "audit_attention_count": audit_attention_count,
             "top_issues": top_issues,
             "repos_stats": repos_stats,
             "response_times": response_times,
@@ -179,12 +205,17 @@ async def api_summary(request: Request):
 
     metrics = draft_store.get_metrics()
     challenges = draft_store.get_severity_challenges(limit=100)
+    recent_drafts = draft_store.list_all(limit=100)
 
     rovo_overrides = sum(
         1 for c in challenges
         if (c.get("severity_challenge") or {}).get("disagrees", False)
     )
     total_challenges = len(challenges)
+    audit_attention_count = sum(
+        1 for d in recent_drafts
+        if (d.get("severity_priority_audit") or {}).get("needs_attention", False)
+    )
 
     # Estimated time saved: ~15 min per approved draft
     time_saved_hours = round(metrics["approved"] * 15 / 60, 1)
@@ -193,6 +224,7 @@ async def api_summary(request: Request):
         **metrics,
         "rovo_overrides": rovo_overrides,
         "total_severity_challenges": total_challenges,
+        "severity_priority_attention_count": audit_attention_count,
         "estimated_time_saved_hours": time_saved_hours,
     })
 

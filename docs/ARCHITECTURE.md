@@ -45,9 +45,10 @@
 | 3 | Collect | `context_collector.py` | Parallel fan-out: Jira, TestRail, Git, Jenkins, ELK, S3, RAG |
 | 4 | Duplicates | `duplicate_detector.py` | Jaccard similarity vs past drafts (180-day window) |
 | 5 | Patterns | `orchestrator.py` | JQL for 3+ open bugs on same component + version |
-| 6 | Draft | `drafter.py` | Template + evidence + optional LLM refinement |
-| 7 | Review | `/ui`, Teams card | Human approves, edits, or rejects |
-| 8 | Post | `/approve` | Writes audit field + posts comment to Jira |
+| 6 | Severity Audit | `severity_challenger.py` | Non-blocking Jira Severity/Priority validation against Standard HPE or PCFS rules |
+| 7 | Draft | `drafter.py` | Template + evidence + optional LLM refinement |
+| 8 | Review | `/ui`, Teams card | Human approves, edits, rejects, and sees severity/priority findings |
+| 9 | Post | `/approve` | Writes audit field + posts comment to Jira |
 
 ## Connectors
 

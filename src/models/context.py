@@ -45,6 +45,7 @@ class IssueContext(BaseModel):
     issue_type: str
     status: str
     priority: str
+    severity: str = ""
     environment: Optional[str] = None
     versions: Optional[list[str]] = None
     components: Optional[list[str]] = None

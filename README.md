@@ -31,8 +31,9 @@ A **FastAPI** service that listens for Jira webhooks, classifies comments into i
 - **Multi-repo PR search** — fan-out across configured repos
 - **Duplicate detection** — Jaccard similarity against past drafts on the same issue
 - **Systemic pattern alerts** — red alert when 3+ open bugs share the same component/version
-- **Review UI** — `/ui` dashboard: approve, edit inline, reject, rate 1–5 stars
-- **Analytics dashboard** — `/dashboard` with KPIs, charts, severity challenge log
+- **Severity + priority audit** — non-blocking validation of Jira Severity and Priority against Standard HPE or PCFS criteria, with recommended values surfaced to reviewers
+- **Review UI** — `/ui` dashboard: approve, edit inline, reject, rate 1–5 stars, and review severity/priority findings
+- **Analytics dashboard** — `/dashboard` with KPIs, charts, severity challenge log, and severity/priority audit attention list
 - **Teams notifications** — AdaptiveCard with Approve/Reject buttons
 - **Webhook security** — HMAC-SHA256 + per-IP rate limiting
 
@@ -93,7 +94,7 @@ Full details: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
 | Method | Endpoint | Description |
 |--------|----------|-------------|
 | GET | `/ui` | Draft review dashboard |
-| GET | `/ui/drafts/{id}` | Draft detail + evidence panel |
+| GET | `/ui/drafts/{id}` | Draft detail + evidence panel + severity/priority audit |
 | POST | `/ui/drafts/{id}/approve` | Approve and post to Jira |
 | POST | `/ui/drafts/{id}/reject` | Reject with feedback |
 | POST | `/ui/drafts/{id}/rate` | Rate 1–5 stars |
@@ -146,6 +147,7 @@ Copy `.env.example` to `.env`. See [docs/SETUP.md](docs/SETUP.md) for the full v
 JIRA_BASE_URL=https://your-org.atlassian.net
 JIRA_USERNAME=your-email@company.com
 JIRA_API_TOKEN=your-api-token
+JIRA_SEVERITY_FIELD_ID=customfield_12633
 ```
 
 **Optional extras:**

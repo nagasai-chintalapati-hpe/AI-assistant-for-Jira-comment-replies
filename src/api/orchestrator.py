@@ -114,6 +114,22 @@ async def _orchestrate(event: JiraWebhookEvent) -> dict:
     # Pattern detection
     _pattern_note = _detect_pattern(context)
 
+    # Severity + priority audit
+    _severity_priority_audit = _severity_challenger.audit_fields(
+        context,
+        pattern_note=_pattern_note,
+    )
+    _severity_priority_audit_dict = _severity_priority_audit.to_dict()
+    if _severity_priority_audit.needs_attention:
+        logger.warning(
+            "Severity/priority audit flagged %s — severity=%s priority=%s recommended=%s/%s",
+            comment.issue_key,
+            _severity_priority_audit.current_severity or "<missing>",
+            _severity_priority_audit.current_priority or "<missing>",
+            _severity_priority_audit.recommended_severity,
+            _severity_priority_audit.recommended_priority,
+        )
+
     # Severity challenge
     _severity_result = _severity_challenger.evaluate(
         context,
@@ -142,6 +158,7 @@ async def _orchestrate(event: JiraWebhookEvent) -> dict:
         similar_drafts=_dup_result.to_dict_list() or None,
         pattern_note=_pattern_note,
         severity_challenge=_severity_dict,
+        severity_priority_audit=_severity_priority_audit_dict,
         repos_searched=_repos_searched,
     )
     logger.info(
@@ -262,6 +279,7 @@ def _collect_context_safe(issue_key: str):
                 issue_type="Bug",
                 status="Open",
                 priority="Medium",
+                severity="",
             ),
             collection_timestamp=datetime.now(timezone.utc),
             collection_duration_ms=0.0,

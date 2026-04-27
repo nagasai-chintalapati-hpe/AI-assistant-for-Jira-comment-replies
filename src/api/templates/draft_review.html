@@ -155,6 +155,42 @@
     </div>
     {% endif %}
 
+    <!-- Severity / Priority Audit -->
+    {% if draft.severity_priority_audit %}
+    {% set audit = draft.severity_priority_audit %}
+    <div class="card mb-3 {% if audit.needs_attention %}severity-card-disagrees{% else %}severity-card-agrees{% endif %}">
+      <div class="card-header {% if audit.needs_attention %}severity-header-disagrees{% else %}severity-header-agrees{% endif %}">
+        <span class="evidence-header">
+          <i class="bi bi-list-check {% if audit.needs_attention %}text-danger{% else %}text-success{% endif %}"></i>
+          Severity / Priority Audit
+          <span class="badge {% if audit.needs_attention %}bg-danger{% else %}bg-success{% endif %} ms-1">
+            {{ audit.criteria_profile|replace('_', ' ')|title }}
+          </span>
+        </span>
+      </div>
+      <div class="card-body small">
+        <p class="mb-2">
+          <strong>Current:</strong>
+          Severity <span class="badge bg-light text-dark border">{{ audit.current_severity or '&lt;missing&gt;' }}</span>
+          Priority <span class="badge bg-light text-dark border">{{ audit.current_priority or '&lt;missing&gt;' }}</span>
+        </p>
+        <p class="mb-2">
+          <strong>Recommended:</strong>
+          <span class="badge {% if audit.needs_attention %}bg-danger{% else %}bg-success{% endif %}">{{ audit.recommended_severity }}</span>
+          <span class="badge {% if audit.needs_attention %}bg-danger{% else %}bg-success{% endif %}">{{ audit.recommended_priority }}</span>
+          <span class="confidence-pill ms-1">{{ "%.0f"|format(audit.confidence * 100) }}% confidence</span>
+        </p>
+        {% if audit.findings %}
+        <ul class="mb-0 evidence-list">
+          {% for finding in audit.findings %}
+          <li>{{ finding }}</li>
+          {% endfor %}
+        </ul>
+        {% endif %}
+      </div>
+    </div>
+    {% endif %}
+
     <!-- Severity Challenge (Rovo counter-assessment) -->
     {% if draft.severity_challenge %}
     {% set sc = draft.severity_challenge %}

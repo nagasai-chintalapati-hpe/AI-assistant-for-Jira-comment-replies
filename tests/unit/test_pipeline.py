@@ -131,6 +131,13 @@ class TestDraftStore:
         client.post("/webhook/jira", json=_webhook_payload())
         assert draft_store.count() == 1
 
+    def test_draft_includes_severity_priority_audit(self):
+        resp = client.post("/webhook/jira", json=_webhook_payload())
+        draft_id = resp.json()["draft_id"]
+        stored = draft_store.get(draft_id)
+        assert stored["severity_priority_audit"]["needs_attention"] is True
+        assert stored["severity_priority_audit"]["recommended_priority"] in {"P0", "P1", "P2", "P3"}
+
     def test_get_draft_by_id(self):
         resp = client.post("/webhook/jira", json=_webhook_payload())
         draft_id = resp.json()["draft_id"]

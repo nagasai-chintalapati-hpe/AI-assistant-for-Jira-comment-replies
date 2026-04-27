@@ -18,6 +18,7 @@ def _make_draft(
     status: DraftStatus = DraftStatus.GENERATED,
     confidence: float = 0.85,
     classification: str = "cannot_reproduce",
+    severity_priority_audit: dict | None = None,
 ) -> Draft:
     d = Draft(
         draft_id=draft_id,
@@ -33,6 +34,7 @@ def _make_draft(
         missing_info=["Environment details", "Reproduction steps"],
         citations=[{"source": "Confluence", "url": "https://example.com", "excerpt": "Some content"}],
         evidence_used=["Confluence page: Setup Guide"],
+        severity_priority_audit=severity_priority_audit,
     )
     draft_store.save(d, classification=classification)
     return d
@@ -145,6 +147,24 @@ class TestUiReview:
         resp = client.get(f"/ui/drafts/{d.draft_id}")
         assert resp.status_code == 200
         assert "85%" in resp.text
+
+    def test_review_shows_severity_priority_audit(self):
+        d = _make_draft(
+            severity_priority_audit={
+                "criteria_profile": "standard_hpe",
+                "current_severity": "",
+                "current_priority": "Medium",
+                "recommended_severity": "Major",
+                "recommended_priority": "P2",
+                "needs_attention": True,
+                "findings": ["Severity is not set on the Jira issue."],
+                "confidence": 0.8,
+            }
+        )
+        resp = client.get(f"/ui/drafts/{d.draft_id}")
+        assert resp.status_code == 200
+        assert "Severity / Priority Audit" in resp.text
+        assert "Severity is not set on the Jira issue." in resp.text
 
 
 # POST /ui/drafts/{id}/approve — form submission

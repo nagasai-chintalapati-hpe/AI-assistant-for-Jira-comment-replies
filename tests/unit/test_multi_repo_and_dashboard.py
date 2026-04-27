@@ -199,6 +199,7 @@ class TestDashboardRoutes:
         assert "total_drafts" in data
         assert "acceptance_rate_pct" in data
         assert "rovo_overrides" in data
+        assert "severity_priority_attention_count" in data
         assert "estimated_time_saved_hours" in data
 
     def test_dashboard_api_daily_volume(self, client):
@@ -239,6 +240,36 @@ class TestDashboardRoutes:
         assert resp.status_code == 200
         data = resp.json()
         assert "data" in data
+
+    def test_dashboard_page_shows_severity_priority_audit_section(self, client):
+        from src.api.deps import draft_store
+        from src.models.draft import Draft
+
+        draft = Draft(
+            draft_id="draft_dashboard_audit",
+            issue_key="AUDIT-1",
+            in_reply_to_comment_id="10000",
+            created_at=datetime.now(timezone.utc),
+            created_by="system",
+            body="Draft body",
+            confidence_score=0.8,
+            severity_priority_audit={
+                "criteria_profile": "standard_hpe",
+                "current_severity": "",
+                "current_priority": "Medium",
+                "recommended_severity": "Major",
+                "recommended_priority": "P2",
+                "needs_attention": True,
+                "findings": ["Severity is not set on the Jira issue."],
+                "confidence": 0.8,
+            },
+        )
+        draft_store.save(draft, classification="other")
+
+        resp = client.get("/dashboard")
+        assert resp.status_code == 200
+        assert "Severity / Priority Audit" in resp.text
+        assert "Severity is not set on the Jira issue." in resp.text
 
 
 # SQLite dashboard query tests

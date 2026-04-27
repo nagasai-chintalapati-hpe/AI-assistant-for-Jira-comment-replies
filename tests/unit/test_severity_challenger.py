@@ -26,6 +26,7 @@ def _make_context(
     description="",
     changelog=None,
     priority="Major",
+    severity="",
     labels=None,
     versions=None,
     components=None,
@@ -45,6 +46,7 @@ def _make_context(
             issue_type="Bug",
             status="Open",
             priority=priority,
+            severity=severity,
             labels=labels or [],
             versions=versions or [],
             components=components or [],
@@ -238,6 +240,38 @@ class TestEvidenceGathering:
 
 
 # Severity computation tests
+
+class TestSeverityPriorityAudit:
+    """Tests for non-blocking Jira severity/priority auditing."""
+
+    def test_missing_severity_is_flagged(self):
+        challenger = SeverityChallenger()
+        ctx = _make_context(priority="Medium")
+        audit = challenger.audit_fields(ctx)
+        assert audit.needs_attention is True
+        assert any("Severity is not set" in finding for finding in audit.findings)
+
+    def test_pcfs_context_selects_pcfs_profile(self):
+        challenger = SeverityChallenger()
+        ctx = _make_context(
+            summary="PCFS cluster expansion setup failure",
+            description="Customer cannot complete setup and workaround is none.",
+            severity="Critical",
+            priority="High",
+            labels=["pcfs"],
+        )
+        audit = challenger.audit_fields(ctx)
+        assert audit.criteria_profile == "pcfs"
+        assert audit.recommended_severity == "Blocker"
+        assert audit.recommended_priority == "P0"
+
+    def test_priority_mismatch_is_flagged(self):
+        challenger = SeverityChallenger()
+        ctx = _make_context(severity="Critical", priority="Low")
+        audit = challenger.audit_fields(ctx)
+        assert audit.needs_attention is True
+        assert any("should map to priority P1" in finding for finding in audit.findings)
+
 
 class TestSeverityComputation:
     """Tests for evidence-based severity rank computation."""

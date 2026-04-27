@@ -153,6 +153,7 @@ class ResponseDrafter:
         similar_drafts: Optional[list[dict]] = None,
         pattern_note: Optional[str] = None,
         severity_challenge: Optional[dict] = None,
+        severity_priority_audit: Optional[dict] = None,
         repos_searched: Optional[list[str]] = None,
     ) -> Draft:
         """Generate a draft response for the given comment and context."""
@@ -201,6 +202,7 @@ class ResponseDrafter:
             similar_drafts=similar_drafts,
             pattern_note=pattern_note,
             severity_challenge=severity_challenge,
+            severity_priority_audit=severity_priority_audit,
             repos_searched=repos_searched,
         )
 

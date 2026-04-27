@@ -23,6 +23,7 @@ class JiraConfig:
     username: str = os.getenv("JIRA_USERNAME", "")
     api_token: str = os.getenv("JIRA_API_TOKEN", "")
     draft_field_id: str = os.getenv("JIRA_DRAFT_FIELD_ID", "")
+    severity_field_id: str = os.getenv("JIRA_SEVERITY_FIELD_ID", "customfield_12633")
 
     def __post_init__(self):
         if os.getenv("ENV") == "production":
@@ -268,6 +269,7 @@ def _load_settings() -> Settings:
                 username=os.getenv("JIRA_USERNAME", ""),
                 api_token=os.getenv("JIRA_API_TOKEN", ""),
                 draft_field_id=os.getenv("JIRA_DRAFT_FIELD_ID", ""),
+                severity_field_id=os.getenv("JIRA_SEVERITY_FIELD_ID", "customfield_12633"),
             ),
             copilot=CopilotConfig(
                 api_key=os.getenv("COPILOT_API_KEY", ""),

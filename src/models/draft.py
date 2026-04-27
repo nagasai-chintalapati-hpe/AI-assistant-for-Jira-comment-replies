@@ -59,6 +59,7 @@ class Draft(BaseModel):
 
     # Severity challenge (Rovo counter-assessment)
     severity_challenge: Optional[dict] = None    # SeverityChallengeResult.to_dict() when Rovo is challenged
+    severity_priority_audit: Optional[dict] = None  # Validation/recommendation for Jira severity + priority fields
 
     # Multi-repo tracking
     repos_searched: Optional[list[str]] = None   # repos scanned for PR correlation
