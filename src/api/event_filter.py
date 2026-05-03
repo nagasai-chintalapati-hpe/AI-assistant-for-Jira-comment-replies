@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from typing import Optional
 
 from src.models.webhook import JiraWebhookEvent
+import src.config as _cfg
 
 logger = logging.getLogger(__name__)
 
@@ -137,7 +138,18 @@ class EventFilter:
                 event_id=eid,
             )
 
-        # 6. Comment author / keyword heuristic (informational only)
+        # 6. QA team gate — for Bug/Defect issues, only process if reporter is QA
+        if self._is_defect_type(issue_type) and not self._reporter_is_qa(event):
+            return FilterResult(
+                accepted=False,
+                reason=(
+                    f"Issue reporter '{event.reporter_display_name or event.reporter_account_id or 'unknown'}' "
+                    f"is not a recognised QA team member — skipping defect"
+                ),
+                event_id=eid,
+            )
+
+        # 7. Comment author / keyword heuristic (informational only)
         # All comments on Bug/Defect issues are processed. Keywords are used
         # downstream by the classifier to improve draft quality, not to gate here.
         if not self._comment_is_relevant(event):
@@ -152,6 +164,52 @@ class EventFilter:
         return FilterResult(accepted=True, reason="accepted", event_id=eid)
 
     # Private helpers
+
+    @staticmethod
+    def _is_defect_type(issue_type: str | None) -> bool:
+        """Return True when the issue type is a bug / defect."""
+        if not issue_type:
+            return False
+        return issue_type.lower() in ("bug", "defect")
+
+    @staticmethod
+    def _reporter_is_qa(event: JiraWebhookEvent) -> bool:
+        """Check whether the issue reporter belongs to the QA team.
+
+        Uses the QA team config from settings: account IDs, display-name
+        substrings, and (optionally) Jira group membership.
+        When the QA filter is disabled via config, everyone passes.
+        """
+        qa_cfg = _cfg.settings.qa_team
+        if not qa_cfg.enabled:
+            return True  # filter disabled — allow all reporters
+
+        # If no QA identifiers configured at all, allow everything
+        # (avoids accidentally blocking all issues on first deploy)
+        if not qa_cfg.account_ids and not qa_cfg.display_names and not qa_cfg.jira_groups:
+            logger.debug("QA team filter enabled but no identifiers configured — allowing all reporters")
+            return True
+
+        # Check by account ID
+        reporter_id = event.reporter_account_id
+        if reporter_id and reporter_id in qa_cfg.account_id_set:
+            return True
+
+        # Check by display name substring
+        reporter_name = (event.reporter_display_name or "").lower()
+        if reporter_name:
+            for pattern in qa_cfg.display_name_patterns:
+                if pattern in reporter_name:
+                    return True
+
+        # Check by email domain or full email (treat as display-name match)
+        reporter_email = (event.reporter_email or "").lower()
+        if reporter_email:
+            for pattern in qa_cfg.display_name_patterns:
+                if pattern in reporter_email:
+                    return True
+
+        return False
 
     @staticmethod
     def _comment_is_relevant(event: JiraWebhookEvent) -> bool:

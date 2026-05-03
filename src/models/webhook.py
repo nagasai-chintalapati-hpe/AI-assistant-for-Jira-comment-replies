@@ -52,6 +52,8 @@ class WebhookIssueFields(BaseModel):
     priority: Optional[dict[str, Any]] = None
     labels: Optional[list[str]] = None
     environment: Optional[str] = None
+    reporter: Optional[dict[str, Any]] = None
+    creator: Optional[dict[str, Any]] = None
 
 
 class WebhookIssue(BaseModel):
@@ -100,4 +102,22 @@ class JiraWebhookEvent(BaseModel):
     def issue_status_name(self) -> Optional[str]:
         if self.issue and self.issue.fields.status:
             return self.issue.fields.status.get("name")
+        return None
+
+    @property
+    def reporter_account_id(self) -> Optional[str]:
+        if self.issue and self.issue.fields.reporter:
+            return self.issue.fields.reporter.get("accountId")
+        return None
+
+    @property
+    def reporter_display_name(self) -> Optional[str]:
+        if self.issue and self.issue.fields.reporter:
+            return self.issue.fields.reporter.get("displayName")
+        return None
+
+    @property
+    def reporter_email(self) -> Optional[str]:
+        if self.issue and self.issue.fields.reporter:
+            return self.issue.fields.reporter.get("emailAddress")
         return None

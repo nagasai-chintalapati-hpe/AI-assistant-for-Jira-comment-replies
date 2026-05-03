@@ -690,7 +690,7 @@ class SeverityChallenger:
             lines.append("")
             lines.append("**Why Rovo's reasoning is flawed:**")
             for counter in evidence.rovo_reasoning_counters:
-                lines.append(f"  ⚠️ {counter}")
+                lines.append(f"  - {counter}")
 
         lines.append("")
         lines.append(

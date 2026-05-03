@@ -46,7 +46,7 @@ class TeamsNotifier:
     ) -> bool:
         """Send a 'new draft' AdaptiveCard to Teams with evidence, checklist, and action buttons."""
         card = self._build_adaptive_card(
-            title=f"🤖 New Draft — {issue_key}",
+            title=f"New Draft — {issue_key}",
             facts={
                 "Draft ID": draft_id,
                 "Classification": classification.replace("_", " ").title(),
@@ -101,6 +101,47 @@ class TeamsNotifier:
         )
         return self._send(card)
 
+    def notify_defect_validation(
+        self,
+        issue_key: str,
+        missing_fields: list[str],
+        missing_sections: list[str],
+        abnormalities: list[str],
+        quality_score: float,
+    ) -> bool:
+        """Send a 'defect validation' notification when abnormalities are detected."""
+        facts = {
+            "Issue": issue_key,
+            "Quality Score": f"{quality_score:.0%}",
+        }
+        if missing_fields:
+            facts["Missing Fields"] = ", ".join(missing_fields[:5])
+        if abnormalities:
+            facts["Abnormalities"] = str(len(abnormalities))
+
+        body_parts = []
+        if missing_fields:
+            body_parts.append("**Missing Required Fields:**")
+            for mf in missing_fields[:5]:
+                body_parts.append(f"  • {mf}")
+        if missing_sections:
+            body_parts.append("**Missing Description Sections:**")
+            for ms in missing_sections[:5]:
+                body_parts.append(f"  • {ms}")
+        if abnormalities:
+            body_parts.append("**Abnormalities:**")
+            for ab in abnormalities[:5]:
+                body_parts.append(f"  - {ab}")
+
+        card = self._build_adaptive_card(
+            title=f"Defect Validation Alert — {issue_key}",
+            facts=facts,
+            body="\n".join(body_parts) if body_parts else "Validation issues detected.",
+            style="attention",
+            issue_key=issue_key,
+        )
+        return self._send(card)
+
     # Internals
     def _build_adaptive_card(
         self,
@@ -147,7 +188,7 @@ class TeamsNotifier:
             evidence_items: list[dict] = [
                 {
                     "type": "TextBlock",
-                    "text": "📎 **Evidence**",
+                    "text": "**Evidence**",
                     "weight": "Bolder",
                     "spacing": "Medium",
                     "wrap": True,
@@ -174,7 +215,7 @@ class TeamsNotifier:
             checklist_items: list[dict] = [
                 {
                     "type": "TextBlock",
-                    "text": "⚠️ **What's Missing**",
+                    "text": "**What's Missing**",
                     "weight": "Bolder",
                     "spacing": "Medium",
                     "wrap": True,
@@ -183,7 +224,7 @@ class TeamsNotifier:
             for item in missing_info[:5]:
                 checklist_items.append({
                     "type": "TextBlock",
-                    "text": f"☐ {item}",
+                    "text": f"- {item}",
                     "wrap": True,
                     "size": "Small",
                 })
@@ -196,23 +237,23 @@ class TeamsNotifier:
         if draft_id and self._app_base_url:
             actions.append({
                 "type": "Action.OpenUrl",
-                "title": "📋 Review Draft",
+                "title": "Review Draft",
                 "url": f"{self._app_base_url}/ui/drafts/{draft_id}",
             })
             actions.append({
                 "type": "Action.OpenUrl",
-                "title": "✅ Approve",
+                "title": "Approve",
                 "url": f"{self._app_base_url}/ui/drafts/{draft_id}",
             })
             actions.append({
                 "type": "Action.OpenUrl",
-                "title": "❌ Reject",
+                "title": "Reject",
                 "url": f"{self._app_base_url}/ui/drafts/{draft_id}",
             })
         if issue_key and self._jira_base_url:
             actions.append({
                 "type": "Action.OpenUrl",
-                "title": "🔗 Open in Jira",
+                "title": "Open in Jira",
                 "url": f"{self._jira_base_url}/browse/{issue_key}",
             })
 
