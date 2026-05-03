@@ -157,6 +157,31 @@ class NotificationConfig:
 
 
 @dataclass(frozen=True)
+class QATeamConfig:
+    """QA team gating — only process defects raised by these users/groups."""
+
+    enabled: bool = os.getenv("QA_TEAM_FILTER_ENABLED", "true").lower() == "true"
+    # Comma-separated Jira accountIds of QA team members
+    account_ids: str = os.getenv("QA_TEAM_ACCOUNT_IDS", "")
+    # Comma-separated display-name substrings (fallback when accountId is absent)
+    display_names: str = os.getenv("QA_TEAM_DISPLAY_NAMES", "")
+    # Comma-separated Jira group names whose members count as QA
+    jira_groups: str = os.getenv("QA_TEAM_JIRA_GROUPS", "")
+
+    @property
+    def account_id_set(self) -> set[str]:
+        return {a.strip() for a in self.account_ids.split(",") if a.strip()}
+
+    @property
+    def display_name_patterns(self) -> list[str]:
+        return [n.strip().lower() for n in self.display_names.split(",") if n.strip()]
+
+    @property
+    def group_names(self) -> list[str]:
+        return [g.strip() for g in self.jira_groups.split(",") if g.strip()]
+
+
+@dataclass(frozen=True)
 class WebhookConfig:
     """Webhook HMAC-SHA256 verification settings."""
 
@@ -257,6 +282,7 @@ class Settings:
     redis: RedisConfig = field(default_factory=RedisConfig)
     queue: QueueConfig = field(default_factory=QueueConfig)
     dashboard: DashboardConfig = field(default_factory=DashboardConfig)
+    qa_team: QATeamConfig = field(default_factory=QATeamConfig)
 
 
 def _load_settings() -> Settings:

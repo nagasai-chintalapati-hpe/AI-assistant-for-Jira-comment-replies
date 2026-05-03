@@ -26,11 +26,13 @@ from src.models.comment import Comment
 from src.utils.redactor import redact_with_stats
 from src.agent.duplicate_detector import DuplicateDetector
 from src.agent.severity_challenger import SeverityChallenger
+from src.agent.defect_validator import DefectValidator
 
 logger = logging.getLogger(__name__)
 
 _duplicate_detector = DuplicateDetector()
 _severity_challenger = SeverityChallenger()
+_defect_validator = DefectValidator()
 
 
 def _sync_queue_handler(event_dict: dict) -> None:
@@ -103,6 +105,26 @@ async def _orchestrate(event: JiraWebhookEvent) -> dict:
 
     # Context collection
     context = _collect_context_safe(comment.issue_key)
+
+    # Defect validation — check completeness and flag abnormalities
+    _validation_result = None
+    _issue_type = context.issue_context.issue_type.lower() if context.issue_context.issue_type else ""
+    if _issue_type in ("bug", "defect"):
+        _validation_result = _defect_validator.validate(context)
+        if _validation_result.needs_notification:
+            logger.warning(
+                "Defect validation flagged %s — %d abnormalities, quality=%.0f%%",
+                comment.issue_key,
+                len(_validation_result.abnormalities),
+                _validation_result.quality_score * 100,
+            )
+            notifier.notify_defect_validation(
+                issue_key=comment.issue_key,
+                missing_fields=_validation_result.missing_fields,
+                missing_sections=_validation_result.missing_sections,
+                abnormalities=_validation_result.abnormalities,
+                quality_score=_validation_result.quality_score,
+            )
 
     # Duplicate detection
     _dup_result = _duplicate_detector.check(
